@@ -2,6 +2,8 @@
 
 **The Physical Embodiment for OpenClaw**
 
+> **Note to OpenClaw Users:** RoClaw is a drop-in Hardware Node. You do not need to modify your OpenClaw Gateway. Just run RoClaw on the same network, and your digital assistant will automatically detect its new physical body.
+
 You already use [OpenClaw](https://github.com/EvolvingAgentsLabs/OpenClaw) to manage your digital life. Now, let it manage your physical space.
 
 RoClaw is an 8cm cube robot that gives OpenClaw a body. Tell it "go check the kitchen" via WhatsApp, and it drives there — using a VLM that outputs raw motor bytecode.

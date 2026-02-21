@@ -37,6 +37,7 @@ describe('RoClaw Tools', () => {
       stop: mockVisionLoopStop,
       isRunning: () => false,
       getGoal: () => 'test',
+      getLatestFrameBase64: () => 'dGVzdGZyYW1l',
     } as unknown as VisionLoop;
 
     ctx = {

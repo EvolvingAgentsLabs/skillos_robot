@@ -39,30 +39,22 @@ The firmware reads 6 bytes into a struct with a single `memcpy`. Parse time: ~0.
 
 ## Checksum
 
-Simple XOR checksum for error detection:
+RoClaw uses a fast XOR checksum for error detection. It is calculated exclusively on the instruction bytes (Opcode, Param_L, Param_R).
 
-```
-CHECKSUM = OPCODE ^ PARAM_L ^ PARAM_R
-```
+`CHECKSUM = (OPCODE ^ PARAM_L ^ PARAM_R) & 0xFF`
 
-Example: MOVE_FORWARD at speed 100/100
-```
-OPCODE=0x01, PARAM_L=0x64, PARAM_R=0x64
-CHECKSUM = 0x01 ^ 0x64 ^ 0x64 = 0x01 (XOR cancels identical values)
-Wait: 0x01 ^ 0x64 = 0x65, 0x65 ^ 0x64 = 0x01? No.
-0x01 ^ 0x64 = 0x65
-0x65 ^ 0x64 = 0x01
-Hmm, let me recalculate: 0x01=00000001, 0x64=01100100
-0x01 ^ 0x64 = 01100101 = 0x65
-0x65 ^ 0x64 = 00000001 = 0x01
-So checksum = 0x01. Frame: AA 01 64 64 01 FF
-```
+**Example: MOVE_FORWARD at speed 100/100**
+- OPCODE: `0x01`
+- PARAM_L: `0x64` (100 in decimal)
+- PARAM_R: `0x64` (100 in decimal)
 
-Actually the LLMos docs say the checksum for this is 0xCB. Let me verify:
-- This uses a different calculation. The actual frame in the docs: `AA 01 64 64 CB FF`
-- So the real calculation must be different, or I should trust the implementation.
+Calculation:
+1. `0x01 ^ 0x64 = 0x65`
+2. `0x65 ^ 0x64 = 0x01`
 
-The compiler code (`calculateChecksum`) is the source of truth: `(opcode ^ paramLeft ^ paramRight) & 0xFF`.
+*(Note: Since Param_L and Param_R are identical, they cancel each other out in XOR).*
+
+**Resulting Frame:** `AA 01 64 64 01 FF`
 
 ## Three Compilation Modes
 

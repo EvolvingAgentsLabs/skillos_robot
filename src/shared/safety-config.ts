@@ -1,8 +1,10 @@
 /**
  * Firmware Safety Config — TypeScript mirror of safety_layer.h
  *
- * Enables the host to configure and read firmware safety parameters
- * via the serial protocol.
+ * Host-side safety parameter types, validation, and clamping logic.
+ * Safety limits (max steps, timeouts) are hardcoded in the C++ safety_layer.h
+ * and cannot be overridden by the host — only the SET_SPEED bytecode opcode
+ * (0x09) can adjust speed/acceleration at runtime.
  */
 
 // ---------------------------------------------------------------------------
@@ -29,7 +31,7 @@ export interface FirmwareSafetyStatus {
 }
 
 // ---------------------------------------------------------------------------
-// Default config
+// Default config (mirrors firmware defaults in safety_layer.h)
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_FIRMWARE_SAFETY_CONFIG: FirmwareSafetyConfig = {
@@ -40,63 +42,6 @@ export const DEFAULT_FIRMWARE_SAFETY_CONFIG: FirmwareSafetyConfig = {
   hostTimeoutMs: 5000,
   minBatteryVoltage: 3.0,
 };
-
-// ---------------------------------------------------------------------------
-// Serialization
-// ---------------------------------------------------------------------------
-
-/**
- * Serialize a FirmwareSafetyConfig into a JSON command string that the
- * ESP32 firmware understands.
- */
-export function serializeSafetyConfig(config: FirmwareSafetyConfig): string {
-  return JSON.stringify({
-    action: 'safety_config',
-    params: {
-      maxMotorPWM: config.maxMotorPWM,
-      emergencyStopCm: config.emergencyStopCm,
-      speedReduceCm: config.speedReduceCm,
-      maxContinuousMs: config.maxContinuousMs,
-      hostTimeoutMs: config.hostTimeoutMs,
-      minBatteryVoltage: config.minBatteryVoltage,
-    },
-  });
-}
-
-/**
- * Parse a JSON string received from the firmware into a
- * FirmwareSafetyStatus object. Returns null if the string is not valid
- * JSON or is missing required fields.
- */
-export function parseSafetyStatus(json: string): FirmwareSafetyStatus | null {
-  try {
-    const parsed = JSON.parse(json);
-
-    if (
-      typeof parsed.emergencyStopped !== 'boolean' ||
-      typeof parsed.motorRunning !== 'boolean' ||
-      typeof parsed.currentMaxPWM !== 'number' ||
-      typeof parsed.violations !== 'number' ||
-      typeof parsed.motorRuntimeMs !== 'number' ||
-      typeof parsed.lastBatteryVoltage !== 'number' ||
-      typeof parsed.hostTimeoutRemaining !== 'number'
-    ) {
-      return null;
-    }
-
-    return {
-      emergencyStopped: parsed.emergencyStopped,
-      motorRunning: parsed.motorRunning,
-      currentMaxPWM: parsed.currentMaxPWM,
-      violations: parsed.violations,
-      motorRuntimeMs: parsed.motorRuntimeMs,
-      lastBatteryVoltage: parsed.lastBatteryVoltage,
-      hostTimeoutRemaining: parsed.hostTimeoutRemaining,
-    };
-  } catch {
-    return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -190,18 +135,6 @@ export const DEFAULT_STEPPER_SAFETY_CONFIG: StepperSafetyConfig = {
   hostHeartbeatMs: 2000,
   maxCoilCurrentMa: 300,
 };
-
-export function serializeStepperSafetyConfig(config: StepperSafetyConfig): string {
-  return JSON.stringify({
-    action: 'stepper_safety_config',
-    params: {
-      maxStepsPerSecond: config.maxStepsPerSecond,
-      maxContinuousSteps: config.maxContinuousSteps,
-      hostHeartbeatMs: config.hostHeartbeatMs,
-      maxCoilCurrentMa: config.maxCoilCurrentMa,
-    },
-  });
-}
 
 export function validateStepperSafetyConfig(
   config: Partial<StepperSafetyConfig>,

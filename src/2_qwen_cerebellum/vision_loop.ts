@@ -12,6 +12,7 @@ import * as http from 'http';
 import { logger } from '../shared/logger';
 import { BytecodeCompiler, formatHex } from './bytecode_compiler';
 import { UDPTransmitter } from './udp_transmitter';
+import { appendTrace } from '../3_llmunix_memory/trace_logger';
 import type { InferenceFunction } from './inference';
 
 // =============================================================================
@@ -64,6 +65,7 @@ export class VisionLoop extends EventEmitter {
   private request: http.ClientRequest | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private processingFrame = false;
+  private latestFrameBase64: string = '';
 
   // MJPEG parsing state
   private buffer = Buffer.alloc(0);
@@ -172,6 +174,14 @@ export class VisionLoop extends EventEmitter {
 
   getGoal(): string {
     return this.currentGoal;
+  }
+
+  /**
+   * Get the latest captured frame as a base64 string.
+   * Returns empty string if no frame has been captured yet.
+   */
+  getLatestFrameBase64(): string {
+    return this.latestFrameBase64;
   }
 
   getStats(): VisionLoopStats {
@@ -316,6 +326,7 @@ export class VisionLoop extends EventEmitter {
     this.lastFrameTime = now;
 
     this.statsData.framesReceived++;
+    this.latestFrameBase64 = data.toString('base64');
 
     // Don't queue frames if we're still processing the previous one
     if (this.processingFrame) return;
@@ -347,6 +358,7 @@ export class VisionLoop extends EventEmitter {
 
         this.emit('bytecode', bytecode, vlmOutput);
         logger.debug('VisionLoop', `Frame → ${formatHex(bytecode)}`);
+        appendTrace(this.currentGoal, vlmOutput, bytecode);
       }
     } finally {
       this.processingFrame = false;

@@ -136,11 +136,14 @@ async function handleDescribeScene(ctx: ToolContext): Promise<ToolResult> {
   logger.info('Tools', 'robot.describe_scene invoked');
 
   try {
-    // Use inference directly for a one-shot description (not bytecode output)
+    // Grab the latest camera frame for visual context
+    const frameBase64 = ctx.visionLoop.getLatestFrameBase64();
+    const images = frameBase64 ? [frameBase64] : undefined;
+
     const description = await ctx.infer(
       'You are a robot with a camera. Describe what you see in detail. Focus on objects, distances, and spatial layout.',
       'Describe the current scene.',
-      // In a real implementation, we'd capture a frame here
+      images,
     );
 
     return {
