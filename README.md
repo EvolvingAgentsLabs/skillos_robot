@@ -6,7 +6,7 @@
 
 You already use [OpenClaw](https://github.com/EvolvingAgentsLabs/OpenClaw) to manage your digital life. Now, let it manage your physical space.
 
-RoClaw is an 8cm cube robot that gives OpenClaw a body. Tell it "go check the kitchen" via WhatsApp, and it drives there — using a VLM that outputs raw motor bytecode.
+RoClaw is a 20cm cube robot that gives OpenClaw a body. Tell it "go check the kitchen" via WhatsApp, and it drives there — using a VLM that outputs raw motor bytecode.
 
 ## The Dual-Brain Architecture
 
@@ -85,11 +85,11 @@ npm test                # Run test suite
 
 ## The Robot
 
-An 8cm 3D-printed cube with two stepper motors and a camera.
+A 20cm 3D-printed cube with two stepper motors and a camera.
 
 | Component | Spec |
 |-----------|------|
-| Chassis | 8cm cube, PLA |
+| Chassis | 20cm cube, PLA (<200 mg print) |
 | Motors | 2x 28BYJ-48 (4096 steps/rev) |
 | Wheels | 6cm diameter |
 | Camera | ESP32-CAM, 320x240 @ 10fps |

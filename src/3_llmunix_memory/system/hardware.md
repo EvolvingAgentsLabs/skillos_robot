@@ -1,9 +1,9 @@
 # Hardware Profile — RoClaw V1
 
 ## Chassis
-- Form factor: 8cm cube
+- Form factor: 20cm x 20cm cube
 - Material: 3D-printed PLA
-- Weight: ~200g (estimated with all components)
+- 3D print weight: <200 mg
 
 ## Motors
 - Type: 28BYJ-48 stepper motors (x2)
