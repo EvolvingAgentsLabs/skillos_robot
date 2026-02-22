@@ -322,6 +322,8 @@ const BYTECODE_SYSTEM_PROMPT = `You are a robot motor controller. You see throug
 
 GOAL: {{GOAL}}
 
+FRAMES: You receive the last few camera frames in chronological order (oldest first). Use the visual differences between frames to understand your motion and trajectory.
+
 OUTPUT FORMAT: Output ONLY a 6-byte hex command. Nothing else. No explanation.
 
 COMMAND REFERENCE:

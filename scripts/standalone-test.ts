@@ -98,6 +98,7 @@ async function main(): Promise<void> {
   console.log(`  Message: ${exploreResult.message}`);
   console.log(`  Waiting 5 seconds for vision loop to process frames...`);
   await sleep(5000);
+  console.log(`  Frame history buffer: ${visionLoop.getFrameHistory().length} frames`);
 
   // --- Test 5: robot.stop ---
   header('Test 5: robot.stop');
@@ -116,6 +117,7 @@ async function main(): Promise<void> {
   console.log(`  Message: ${goToResult.message}`);
   console.log(`  Waiting 5 seconds for vision loop...`);
   await sleep(5000);
+  console.log(`  Frame history buffer: ${visionLoop.getFrameHistory().length} frames`);
 
   // --- Stop and cleanup ---
   header('Cleanup');

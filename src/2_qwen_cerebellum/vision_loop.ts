@@ -30,6 +30,8 @@ export interface VisionLoopConfig {
   autoReconnect: boolean;
   /** Reconnect delay in ms (default: 2000) */
   reconnectDelayMs: number;
+  /** Number of recent frames to send for temporal context (default: 3) */
+  frameHistorySize: number;
 }
 
 export interface VisionLoopStats {
@@ -48,6 +50,7 @@ const DEFAULT_CONFIG: VisionLoopConfig = {
   connectTimeoutMs: 5000,
   autoReconnect: true,
   reconnectDelayMs: 2000,
+  frameHistorySize: 3,
 };
 
 // =============================================================================
@@ -66,6 +69,7 @@ export class VisionLoop extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private processingFrame = false;
   private latestFrameBase64: string = '';
+  private frameHistory: string[] = [];
 
   // MJPEG parsing state
   private buffer = Buffer.alloc(0);
@@ -130,6 +134,7 @@ export class VisionLoop extends EventEmitter {
     }
 
     this.buffer = Buffer.alloc(0);
+    this.frameHistory = [];
     logger.info('VisionLoop', 'Stopped');
   }
 
@@ -144,12 +149,15 @@ export class VisionLoop extends EventEmitter {
   /**
    * Process a single frame manually (for testing or single-shot mode).
    */
-  async processSingleFrame(frameBase64: string): Promise<Buffer | null> {
+  async processSingleFrame(frameBase64: string, history?: string[]): Promise<Buffer | null> {
     const systemPrompt = this.compiler.getSystemPrompt(this.currentGoal);
-    const userMessage = 'What do you see? Output the next motor command.';
+    const frames = history ?? [frameBase64];
+    const userMessage = frames.length > 1
+      ? `These are the last ${frames.length} camera frames showing your trajectory (oldest first). Output the next motor command.`
+      : 'What do you see? Output the next motor command.';
 
     try {
-      const vlmOutput = await this.infer(systemPrompt, userMessage, [frameBase64]);
+      const vlmOutput = await this.infer(systemPrompt, userMessage, frames);
       this.statsData.inferenceCount++;
 
       const bytecode = this.compiler.compile(vlmOutput);
@@ -182,6 +190,13 @@ export class VisionLoop extends EventEmitter {
    */
   getLatestFrameBase64(): string {
     return this.latestFrameBase64;
+  }
+
+  /**
+   * Get the current frame history buffer (oldest first).
+   */
+  getFrameHistory(): string[] {
+    return [...this.frameHistory];
   }
 
   getStats(): VisionLoopStats {
@@ -328,6 +343,12 @@ export class VisionLoop extends EventEmitter {
     this.statsData.framesReceived++;
     this.latestFrameBase64 = data.toString('base64');
 
+    // Maintain frame history ring buffer
+    this.frameHistory.push(this.latestFrameBase64);
+    if (this.frameHistory.length > this.config.frameHistorySize) {
+      this.frameHistory.shift();
+    }
+
     // Don't queue frames if we're still processing the previous one
     if (this.processingFrame) return;
 
@@ -343,11 +364,13 @@ export class VisionLoop extends EventEmitter {
     this.processingFrame = true;
 
     try {
-      const frameBase64 = jpegData.toString('base64');
       const systemPrompt = this.compiler.getSystemPrompt(this.currentGoal);
-      const userMessage = 'What do you see? Output the next motor command.';
+      const frameCount = this.frameHistory.length;
+      const userMessage = frameCount > 1
+        ? `These are the last ${frameCount} camera frames showing your trajectory (oldest first). Output the next motor command.`
+        : 'What do you see? Output the next motor command.';
 
-      const vlmOutput = await this.infer(systemPrompt, userMessage, [frameBase64]);
+      const vlmOutput = await this.infer(systemPrompt, userMessage, [...this.frameHistory]);
       this.statsData.inferenceCount++;
 
       const bytecode = this.compiler.compile(vlmOutput);
