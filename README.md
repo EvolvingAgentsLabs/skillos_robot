@@ -4,7 +4,7 @@
 
 > **Note to OpenClaw Users:** RoClaw is a drop-in Hardware Node. You do not need to modify your OpenClaw Gateway. Just run RoClaw on the same network, and your digital assistant will automatically detect its new physical body.
 
-You already use [OpenClaw](https://github.com/EvolvingAgentsLabs/OpenClaw) to manage your digital life. Now, let it manage your physical space.
+You already use [OpenClaw](https://github.com/openclaw/openclaw) to manage your digital life. Now, let it manage your physical space.
 
 RoClaw is a 20cm cube robot that gives OpenClaw a body. Tell it "go check the kitchen" via WhatsApp, and it drives there — using a VLM that outputs raw motor bytecode.
 
@@ -29,7 +29,7 @@ graph TD
 | Project | Role | Brain Region | Speed |
 |---------|------|-------------|-------|
 | **OpenClaw** | Digital agent platform | Cortex | Seconds |
-| **LLMunix** | Memory & evolution engine | Hippocampus | Persistent |
+| **[LLMunix](https://github.com/EvolvingAgentsLabs/llmunix-starter)** | Memory & evolution engine | Hippocampus | Persistent |
 | **RoClaw** | Physical robot body | Cerebellum | Sub-second |
 
 ## Zero-Latency Bytecode
