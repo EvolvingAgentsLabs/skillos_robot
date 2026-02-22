@@ -11,7 +11,7 @@
 | 5 | Wheels (6cm diameter) | 2 | Press-fit or 3D-printed for 28BYJ-48 shaft |
 | 6 | Ball Caster | 1 | Rear support, low friction |
 | 7 | 5V 2A Power Supply | 1 | USB-C or barrel jack, powers both ESP32s and motors |
-| 8 | 3D-Printed Cube Chassis | 1 | 8cm cube, mounts all components |
+| 8 | 3D-Printed Cube Chassis | 1 | 20cm cube, mounts all components |
 | 9 | Jumper Wires | ~20 | Dupont female-female and male-female |
 | 10 | USB-C Cable | 2 | Programming and power for each ESP32 |
 
@@ -90,7 +90,7 @@
 |-----------|-------|
 | Wheel diameter | 6.0 cm |
 | Wheel circumference | 18.85 cm |
-| Wheel base | 12.0 cm |
+| Wheel base | 10.0 cm |
 | Steps per cm | ~217.3 |
 | Max speed | 1024 steps/s (~4.71 cm/s) |
 | Max acceleration | 512 steps/s^2 |

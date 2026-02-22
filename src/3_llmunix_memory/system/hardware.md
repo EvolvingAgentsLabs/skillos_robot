@@ -17,7 +17,7 @@
 - Circumference: 18.85 cm
 - Steps per cm: 217.3
 - Max linear speed: 4.71 cm/s
-- Wheel base: 12.0 cm
+- Wheel base: 10.0 cm
 
 ## Camera
 - Module: ESP32-CAM (AI-Thinker)

@@ -9,7 +9,7 @@
  *   - ESP32-S3-DevKitC-1
  *   - 2x 28BYJ-48 (4096 steps/rev, 64:1 gear ratio)
  *   - 2x ULN2003 driver boards
- *   - 6cm diameter wheels, 12cm wheel base
+ *   - 6cm diameter wheels, 10cm wheel base
  *
  * Protocol: 6-byte binary frames over UDP port 4210
  * Frame: [0xAA] [OPCODE] [PARAM_L] [PARAM_R] [CHECKSUM] [0xFF]
@@ -55,7 +55,7 @@ const int UDP_PORT = 4210;
 
 #define STEPS_PER_REV      4096    // 64:1 gear ratio * 64 steps
 #define WHEEL_DIAMETER_CM  6.0f
-#define WHEEL_BASE_CM      12.0f
+#define WHEEL_BASE_CM      10.0f
 #define MAX_SPEED_STEPS_S  1024    // Safe max for 28BYJ-48
 #define DEFAULT_ACCEL      512     // steps/s^2
 
