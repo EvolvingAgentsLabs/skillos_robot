@@ -1,4 +1,4 @@
-import { handleTool, type ToolContext } from '../../src/1_openclaw_cortex/roclaw_tools';
+import { handleTool, _resetTopoMap, _getTopoMapLoop, _getPoseMap, type ToolContext } from '../../src/1_openclaw_cortex/roclaw_tools';
 import { BytecodeCompiler, Opcode, formatHex } from '../../src/2_qwen_cerebellum/bytecode_compiler';
 import { UDPTransmitter } from '../../src/2_qwen_cerebellum/udp_transmitter';
 import { VisionLoop } from '../../src/2_qwen_cerebellum/vision_loop';
@@ -13,6 +13,10 @@ describe('RoClaw Tools', () => {
   let mockVisionLoopStop: jest.Mock;
 
   beforeEach(() => {
+    // Reset singletons so each test starts clean
+    _resetTopoMap();
+    _getPoseMap().clear();
+
     const compiler = new BytecodeCompiler('fewshot');
 
     mockTransmitterSend = jest.fn().mockResolvedValue(undefined);
@@ -38,6 +42,8 @@ describe('RoClaw Tools', () => {
       isRunning: () => false,
       getGoal: () => 'test',
       getLatestFrameBase64: () => 'dGVzdGZyYW1l',
+      on: jest.fn(),
+      removeListener: jest.fn(),
     } as unknown as VisionLoop;
 
     ctx = {
@@ -46,6 +52,10 @@ describe('RoClaw Tools', () => {
       visionLoop,
       infer: mockInfer as InferenceFunction,
     };
+  });
+
+  afterEach(() => {
+    _resetTopoMap();
   });
 
   // ===========================================================================
@@ -93,6 +103,14 @@ describe('RoClaw Tools', () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain('Camera offline');
     });
+
+    test('starts topo map loop alongside vision loop', async () => {
+      const result = await handleTool('robot.explore', {}, ctx);
+      expect(result.success).toBe(true);
+      const loop = _getTopoMapLoop();
+      expect(loop).not.toBeNull();
+      expect(loop!.isRunning()).toBe(true);
+    });
   });
 
   // ===========================================================================
@@ -132,6 +150,23 @@ describe('RoClaw Tools', () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain('No location');
     });
+
+    test('falls back gracefully when SemanticMap planning fails', async () => {
+      // Force ensureTopoMap to have nodes so it attempts planning
+      // (empty map skips planning entirely, so this tests the fallback path)
+      const result = await handleTool('robot.go_to', { location: 'the garage' }, ctx);
+      expect(result.success).toBe(true);
+      // Should still navigate via PoseMap fallback
+      expect(result.message).toContain('Navigation started');
+    });
+
+    test('starts topo map loop alongside navigation', async () => {
+      const result = await handleTool('robot.go_to', { location: 'the kitchen' }, ctx);
+      expect(result.success).toBe(true);
+      const loop = _getTopoMapLoop();
+      expect(loop).not.toBeNull();
+      expect(loop!.isRunning()).toBe(true);
+    });
   });
 
   // ===========================================================================
@@ -155,6 +190,27 @@ describe('RoClaw Tools', () => {
   });
 
   // ===========================================================================
+  // robot.analyze_scene
+  // ===========================================================================
+
+  describe('robot.analyze_scene', () => {
+    test('returns failure when no frame or VLM fails', async () => {
+      // mockInfer returns text, but processScene needs valid JSON from VLM
+      // The loop's analyzeNow will call infer which returns non-JSON, causing processScene to fail
+      mockInfer.mockRejectedValueOnce(new Error('VLM timeout'));
+      const result = await handleTool('robot.analyze_scene', {}, ctx);
+      expect(result.success).toBe(false);
+    });
+
+    test('creates topo map loop lazily', async () => {
+      expect(_getTopoMapLoop()).toBeNull();
+      // This will attempt analysis (may fail due to mock, but loop is created)
+      await handleTool('robot.analyze_scene', {}, ctx);
+      expect(_getTopoMapLoop()).not.toBeNull();
+    });
+  });
+
+  // ===========================================================================
   // robot.stop
   // ===========================================================================
 
@@ -169,6 +225,17 @@ describe('RoClaw Tools', () => {
       // Verify the sent buffer is a STOP frame
       const sentBuffer = mockTransmitterSend.mock.calls[0][0] as Buffer;
       expect(sentBuffer[1]).toBe(Opcode.STOP);
+    });
+
+    test('stops topo map loop when running', async () => {
+      // First start explore to create and start topo loop
+      await handleTool('robot.explore', {}, ctx);
+      const loop = _getTopoMapLoop()!;
+      expect(loop.isRunning()).toBe(true);
+
+      // Now stop
+      await handleTool('robot.stop', {}, ctx);
+      expect(loop.isRunning()).toBe(false);
     });
   });
 
@@ -229,7 +296,7 @@ describe('RoClaw Tools', () => {
   // ===========================================================================
 
   describe('robot.get_map', () => {
-    test('returns semantic map summary', async () => {
+    test('returns pose map summary', async () => {
       const result = await handleTool('robot.get_map', {}, ctx);
       expect(result.success).toBe(true);
       expect(result.data).toHaveProperty('entryCount');

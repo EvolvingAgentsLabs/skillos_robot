@@ -179,6 +179,7 @@ function parseJSONSafe<T>(text: string): T | null {
 // =============================================================================
 
 const MAP_FILE = path.join(__dirname, 'traces', 'semantic_map.json');
+const TOPO_MAP_FILE = path.join(__dirname, 'traces', 'topo_map.json');
 
 export class PoseMap {
   private entries: SemanticMapEntry[] = [];
@@ -331,6 +332,7 @@ export class SemanticMap {
 
   constructor(inferFn: InferenceFunction) {
     this.infer = inferFn;
+    this.load();
   }
 
   // ---------------------------------------------------------------------------
@@ -451,6 +453,7 @@ export class SemanticMap {
     }
 
     this.currentNodeId = nodeId;
+    this.save();
     return { nodeId, isNew, analysis };
   }
 
@@ -583,14 +586,15 @@ export class SemanticMap {
   // Serialization (for LLMunix memory persistence)
   // ---------------------------------------------------------------------------
 
-  toJSON(): { nodes: SemanticNode[]; edges: SemanticEdge[] } {
+  toJSON(): { nodes: SemanticNode[]; edges: SemanticEdge[]; currentNodeId: string | null } {
     return {
       nodes: Array.from(this.nodes.values()),
       edges: this.edges,
+      currentNodeId: this.currentNodeId,
     };
   }
 
-  loadFromJSON(data: { nodes: SemanticNode[]; edges: SemanticEdge[] }): void {
+  loadFromJSON(data: { nodes: SemanticNode[]; edges: SemanticEdge[]; currentNodeId?: string | null }): void {
     this.nodes.clear();
     this.edges = [];
     for (const node of data.nodes) {
@@ -599,11 +603,40 @@ export class SemanticMap {
       if (!isNaN(idNum) && idNum >= this.nextId) this.nextId = idNum + 1;
     }
     this.edges = data.edges;
+    if (data.currentNodeId !== undefined) {
+      this.currentNodeId = data.currentNodeId;
+    }
   }
 
   // ---------------------------------------------------------------------------
   // Private
   // ---------------------------------------------------------------------------
+
+  private load(): void {
+    try {
+      if (fs.existsSync(TOPO_MAP_FILE)) {
+        const raw = fs.readFileSync(TOPO_MAP_FILE, 'utf-8');
+        const data = JSON.parse(raw);
+        this.loadFromJSON(data);
+      }
+    } catch {
+      logger.warn('SemanticMap', 'Failed to load topo map, starting fresh');
+    }
+  }
+
+  private save(): void {
+    try {
+      const dir = path.dirname(TOPO_MAP_FILE);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(TOPO_MAP_FILE, JSON.stringify(this.toJSON(), null, 2));
+    } catch (err) {
+      logger.error('SemanticMap', 'Failed to save topo map', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   private addEdge(fromId: string, toId: string, action: string, steps = 0): void {
     // Check if edge already exists

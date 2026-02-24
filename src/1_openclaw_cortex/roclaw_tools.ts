@@ -11,7 +11,8 @@ import { UDPTransmitter } from '../2_qwen_cerebellum/udp_transmitter';
 import { VisionLoop } from '../2_qwen_cerebellum/vision_loop';
 import type { InferenceFunction } from '../2_qwen_cerebellum/inference';
 import { MemoryManager } from '../3_llmunix_memory/memory_manager';
-import { PoseMap } from '../3_llmunix_memory/semantic_map';
+import { PoseMap, SemanticMap } from '../3_llmunix_memory/semantic_map';
+import { SemanticMapLoop } from '../3_llmunix_memory/semantic_map_loop';
 
 // =============================================================================
 // Types
@@ -32,7 +33,32 @@ export interface ToolContext {
 
 // Module-level singletons — avoids changing ToolContext interface
 const memoryManager = new MemoryManager();
-const semanticMap = new PoseMap();
+const poseMap = new PoseMap();
+
+// Lazy-initialized — requires InferenceFunction which isn't available at module load
+let topoMap: SemanticMap | null = null;
+let topoMapLoop: SemanticMapLoop | null = null;
+
+function ensureTopoMap(ctx: ToolContext): SemanticMap {
+  if (!topoMap) {
+    topoMap = new SemanticMap(ctx.infer);
+  }
+  return topoMap;
+}
+
+function ensureTopoMapLoop(ctx: ToolContext): SemanticMapLoop {
+  if (!topoMapLoop) {
+    const sm = ensureTopoMap(ctx);
+    topoMapLoop = new SemanticMapLoop(
+      sm,
+      ctx.visionLoop,
+      ctx.infer,
+      ctx.compiler,
+      ctx.transmitter,
+    );
+  }
+  return topoMapLoop;
+}
 
 /** Exposed for testing — allows injecting a mock MemoryManager */
 export function _getMemoryManager(): MemoryManager {
@@ -40,8 +66,25 @@ export function _getMemoryManager(): MemoryManager {
 }
 
 /** Exposed for testing — allows accessing the PoseMap */
-export function _getSemanticMap(): PoseMap {
-  return semanticMap;
+export function _getPoseMap(): PoseMap {
+  return poseMap;
+}
+
+/** Exposed for testing — allows accessing the topological SemanticMap */
+export function _getTopoMap(): SemanticMap | null {
+  return topoMap;
+}
+
+/** Exposed for testing — allows accessing the SemanticMapLoop */
+export function _getTopoMapLoop(): SemanticMapLoop | null {
+  return topoMapLoop;
+}
+
+/** Exposed for testing — reset lazy singletons */
+export function _resetTopoMap(): void {
+  topoMapLoop?.stop();
+  topoMapLoop = null;
+  topoMap = null;
 }
 
 // =============================================================================
@@ -81,8 +124,12 @@ export const TOOL_DEFINITIONS = [
     parameters: { label: 'string', confidence: 'number (optional, 0-1)' },
   },
   {
+    name: 'robot.analyze_scene',
+    description: 'Run an on-demand VLM-powered scene analysis. Returns structured location data including label, features, navigation hints, and confidence.',
+  },
+  {
     name: 'robot.get_map',
-    description: 'Get the robot\'s semantic map of known locations and their coordinates',
+    description: 'Get the robot\'s map of known locations. Returns both the PoseMap (label+coordinates) and the topological graph (nodes, edges, navigation context) if available.',
   },
 ] as const;
 
@@ -119,8 +166,11 @@ export async function handleTool(
     case 'robot.record_observation':
       return handleRecordObservation(args.label as string, ctx, args.confidence as number | undefined);
 
+    case 'robot.analyze_scene':
+      return handleAnalyzeScene(ctx);
+
     case 'robot.get_map':
-      return handleGetMap();
+      return handleGetMap(ctx);
 
     default:
       return { success: false, message: `Unknown tool: ${toolName}` };
@@ -150,6 +200,16 @@ async function handleExplore(ctx: ToolContext, constraints?: string): Promise<To
 
   try {
     await ctx.visionLoop.start(goal);
+
+    // Start topological mapping in the background
+    try {
+      ensureTopoMapLoop(ctx).start();
+    } catch (err) {
+      logger.warn('Tools', 'Failed to start topo map loop', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     return {
       success: true,
       message: 'Exploration started. The robot is now autonomously navigating.',
@@ -169,8 +229,33 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
 
   logger.info('Tools', `robot.go_to: ${location}`, constraints ? { constraints } : undefined);
 
-  // Check the semantic map for a known location
-  const knownLocation = semanticMap.findNearest(location);
+  // Try VLM-powered topological navigation first
+  let topoNavHint = '';
+  try {
+    const sm = ensureTopoMap(ctx);
+    if (sm.getAllNodes().length > 0) {
+      const frameBase64 = ctx.visionLoop.getLatestFrameBase64();
+      if (frameBase64) {
+        const sceneDesc = await ctx.infer(
+          'You are a robot with a camera. Briefly describe what you see.',
+          'Describe the current scene.',
+          [frameBase64],
+        );
+        const decision = await sm.planNavigation(sceneDesc, location);
+        if (decision && decision.confidence > 0.5) {
+          topoNavHint = ` [TopoMap: "${decision.reasoning}" (confidence: ${decision.confidence.toFixed(2)})]`;
+          logger.info('Tools', `Topo navigation plan: ${decision.action} — ${decision.reasoning}`);
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug('Tools', 'Topo navigation planning failed, falling back to PoseMap', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Fall back to PoseMap for coordinate-based hint
+  const knownLocation = poseMap.findNearest(location);
   let baseGoal: string;
   let navHint = '';
 
@@ -188,9 +273,19 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
 
   try {
     await ctx.visionLoop.start(goal);
+
+    // Start topological mapping alongside navigation
+    try {
+      ensureTopoMapLoop(ctx).start();
+    } catch (err) {
+      logger.warn('Tools', 'Failed to start topo map loop', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     return {
       success: true,
-      message: `Navigation started toward "${location}".${navHint}`,
+      message: `Navigation started toward "${location}".${navHint}${topoNavHint}`,
     };
   } catch (error) {
     return {
@@ -227,12 +322,45 @@ async function handleDescribeScene(ctx: ToolContext): Promise<ToolResult> {
   }
 }
 
+async function handleAnalyzeScene(ctx: ToolContext): Promise<ToolResult> {
+  logger.info('Tools', 'robot.analyze_scene invoked');
+
+  try {
+    const loop = ensureTopoMapLoop(ctx);
+    const analysis = await loop.analyzeNow();
+
+    if (!analysis) {
+      return {
+        success: false,
+        message: 'Scene analysis returned no results (no camera frame available or VLM failure)',
+      };
+    }
+
+    return {
+      success: true,
+      message: `Location: ${analysis.locationLabel} — ${analysis.description}`,
+      data: {
+        label: analysis.locationLabel,
+        features: analysis.features,
+        navigationHints: analysis.navigationHints,
+        confidence: analysis.confidence,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `Scene analysis failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 async function handleStop(ctx: ToolContext): Promise<ToolResult> {
   logger.info('Tools', 'robot.stop invoked');
 
   try {
-    // Stop the vision loop
+    // Stop the vision loop and topo map loop
     ctx.visionLoop.stop();
+    topoMapLoop?.stop();
 
     // Send STOP bytecode
     const stopFrame = ctx.compiler.createFrame(Opcode.STOP);
@@ -269,7 +397,7 @@ async function handleRecordObservation(label: string, ctx: ToolContext, confiden
       heading: (status.pose?.h ?? 0) * 180 / Math.PI,
     };
 
-    semanticMap.record(label, pose, confidence);
+    poseMap.record(label, pose, confidence);
 
     return {
       success: true,
@@ -279,7 +407,7 @@ async function handleRecordObservation(label: string, ctx: ToolContext, confiden
   } catch (error) {
     // If we can't get the pose, record at origin
     logger.warn('Tools', 'Could not get pose for observation, recording at (0,0)');
-    semanticMap.record(label, { x: 0, y: 0, heading: 0 }, confidence);
+    poseMap.record(label, { x: 0, y: 0, heading: 0 }, confidence);
 
     return {
       success: true,
@@ -289,16 +417,29 @@ async function handleRecordObservation(label: string, ctx: ToolContext, confiden
   }
 }
 
-async function handleGetMap(): Promise<ToolResult> {
+async function handleGetMap(ctx: ToolContext): Promise<ToolResult> {
   logger.info('Tools', 'robot.get_map invoked');
 
-  const summary = semanticMap.getSummary();
-  const entries = semanticMap.getAll();
+  const poseSummary = poseMap.getSummary();
+  const entries = poseMap.getAll();
+
+  // Include topological graph if available
+  let topoSummary = '';
+  let topoData: Record<string, unknown> = {};
+  if (topoMap && topoMap.getAllNodes().length > 0) {
+    topoSummary = '\n\nTopological graph:\n' + topoMap.getMapSummary();
+    const json = topoMap.toJSON();
+    topoData = {
+      topoNodes: json.nodes,
+      topoEdges: json.edges,
+      topoStats: topoMap.getStats(),
+    };
+  }
 
   return {
     success: true,
-    message: summary,
-    data: { entryCount: entries.length, entries },
+    message: poseSummary + topoSummary,
+    data: { entryCount: entries.length, entries, ...topoData },
   };
 }
 
