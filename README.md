@@ -59,24 +59,36 @@ The **Semantic Map** is the robot's working memory — a topological graph where
 
 ### E2E Validation (no hardware required)
 
-The navigation chain of thought is tested end-to-end using real VLM inference (Qwen3-VL-8B via OpenRouter) but **without any camera or hardware**. Text descriptions simulate what the robot's camera would see, and the VLM reasons about them as if interpreting real images.
+The navigation chain of thought is validated with two complementary E2E test suites, both using real VLM inference (Qwen3-VL-8B via OpenRouter) but **no camera or hardware**.
+
+**Text-based tests** — Hand-written scene descriptions simulate camera input. Fast, deterministic, tests the semantic reasoning pipeline:
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-v1-...
-npm test -- --testPathPattern=semantic-map
+npm test -- --testPathPattern=semantic-map.e2e
+```
+
+**Vision tests** — Real indoor photographs (CC0-licensed, from [Kaggle House Rooms Dataset](https://www.kaggle.com/datasets/robinreni/house-rooms-image-dataset)) are fed through the full production pipeline: `image → VLM description → SemanticMap analysis → map building → navigation → bytecode`:
+
+```bash
+# One-time: download fixture images
+KAGGLE_USERNAME=... KAGGLE_KEY=... npx tsx __tests__/navigation/fixtures/download-kaggle-rooms.ts
+# Run vision tests
+npm test -- --testPathPattern=semantic-map-vision
 ```
 
 **Test results with `qwen/qwen3-vl-8b-thinking`:**
 
-| Capability | Result |
-|------------|--------|
-| Scene analysis (kitchen, bedroom, hallway) | Correct labels + features extracted |
-| Location matching (same kitchen, different angle) | `isSameLocation: true, confidence: 0.9` |
-| Location distinction (kitchen vs bedroom) | `isSameLocation: false, confidence: 0.99` |
-| Map building (5-room apartment exploration) | 5 nodes, 6 edges, correct revisit detection |
-| Navigation planning (hallway → kitchen) | `TURN_RIGHT 180 100` (kitchen is to the right) |
-| Full pipeline (scene → map → plan → bytecode) | `FORWARD 150 150` → `AA 01 96 96 01 FF` |
-| Pathfinding across built map | BFS shortest path works across all nodes |
+| Capability | Text Tests | Vision Tests |
+|------------|-----------|--------------|
+| Scene analysis (kitchen, bedroom, hallway) | Correct labels + features | Correct from real photos |
+| Location matching (same location, 2 angles) | `isSameLocation: true, confidence: 0.9` | `isSameLocation: true, confidence: 0.9` |
+| Location distinction (kitchen vs bedroom) | `isSameLocation: false, confidence: 0.99` | `isSameLocation: false, confidence: 0.99` |
+| Map building (multi-room exploration) | 5 nodes, 6 edges, revisit detection | 3 nodes, 2 edges from real images |
+| Navigation planning (→ kitchen) | `TURN_RIGHT 180 100` | `TURN_RIGHT 100 180` |
+| Full pipeline (→ bytecode) | `FORWARD 150 150` → `AA 01 96 96 01 FF` | `TURN_RIGHT 100 180` → `AA 04 64 B4 D4 FF` |
+| Direct vision (image → SemanticMap) | N/A | Images passed directly to `analyzeScene()` |
+| Pathfinding across built map | BFS shortest path works | BFS shortest path works |
 
 ## Zero-Latency Bytecode
 
@@ -161,7 +173,11 @@ RoClaw/
 ├── 4_somatic_firmware/          # C++ for ESP32 MCUs
 ├── 5_hardware_cad/              # STL files & Blender scene
 ├── docs/                        # Architecture documentation
-└── __tests__/                   # Jest test suites
+└── __tests__/
+    └── navigation/
+        ├── semantic-map.e2e.test.ts         # Text-based E2E tests
+        ├── semantic-map-vision.e2e.test.ts  # Vision E2E tests (real images)
+        └── fixtures/indoor_scenes/          # CC0 room photographs
 ```
 
 The numbered folders encode the architecture:

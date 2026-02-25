@@ -63,4 +63,4 @@ The Cortex is intentionally minimal. It:
 3. Starts/stops the vision loop
 4. Reports results back to OpenClaw
 
-No path planning. No mapping. No localization. Those are future capabilities that would live in the Cerebellum or a separate planning module.
+Path planning and localization live in the **Semantic Map** — a VLM-powered topological graph that runs as an async sidecar to the Cerebellum. It analyzes camera frames to build a map of locations (nodes) and navigation paths (edges), enabling re-identification of visited places and multi-hop pathfinding. See [LLMunix Evolution](04-LLMunix-Evolution.md) for details.
