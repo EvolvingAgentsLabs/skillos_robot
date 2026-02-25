@@ -59,7 +59,7 @@ The **Semantic Map** is the robot's working memory — a topological graph where
 
 ### E2E Validation (no hardware required)
 
-The navigation chain of thought is validated with two complementary E2E test suites, both using real VLM inference (Qwen3-VL-8B via OpenRouter) but **no camera or hardware**.
+The navigation chain of thought is validated with complementary E2E test suites — **no camera or hardware required**.
 
 **Text-based tests** — Hand-written scene descriptions simulate camera input. Fast, deterministic, tests the semantic reasoning pipeline:
 
@@ -77,6 +77,18 @@ KAGGLE_USERNAME=... KAGGLE_KEY=... npx tsx __tests__/navigation/fixtures/downloa
 npm test -- --testPathPattern=semantic-map-vision
 ```
 
+**Outdoor tests** — Real walking-route captures with sequential frames and compass heading data:
+
+```bash
+npm test -- --testPathPattern=semantic-map-outdoor
+```
+
+**Synthetic tests** — Mock VLM inference with realistic JSON responses. Validates the Jaccard pre-filter, full Navigation CoT pipeline, and bytecode compilation **without any API key**:
+
+```bash
+npm test -- --testPathPattern=semantic-map-synthetic
+```
+
 **Test results with `qwen/qwen3-vl-8b-thinking`:**
 
 | Capability | Text Tests | Vision Tests |
@@ -89,6 +101,17 @@ npm test -- --testPathPattern=semantic-map-vision
 | Full pipeline (→ bytecode) | `FORWARD 150 150` → `AA 01 96 96 01 FF` | `TURN_RIGHT 100 180` → `AA 04 64 B4 D4 FF` |
 | Direct vision (image → SemanticMap) | N/A | Images passed directly to `analyzeScene()` |
 | Pathfinding across built map | BFS shortest path works | BFS shortest path works |
+
+**Synthetic tests (no API key needed):**
+
+| Capability | Result |
+|------------|--------|
+| Jaccard pre-filter skips dissimilar nodes | kitchen vs bedroom → skipped (similarity < 0.15) |
+| Jaccard pre-filter passes similar nodes | kitchen vs kitchen-from-table → VLM called |
+| Full CoT pipeline (analyze → match → plan → compile) | Valid 6-byte bytecode frame |
+| Map building with revisit detection | 4-room walkthrough → 3 nodes, correct revisit |
+| Permissive compiler (trailing punctuation) | `"FORWARD 150, 150."` → `AA 01 96 96 01 FF` |
+| Serialization round-trip | `toJSON()`/`loadFromJSON()` preserves fingerprints |
 
 ## Zero-Latency Bytecode
 
@@ -111,13 +134,23 @@ Bytecode (6 bytes):  AA 01 64 64 CB FF
 | `0x04` | TURN_RIGHT | speed_L, speed_R |
 | `0x05` | ROTATE_CW | degrees, speed |
 | `0x06` | ROTATE_CCW | degrees, speed |
-| `0x07` | STOP | - |
+| `0x07` | STOP | hold_torque, - |
 | `0x08` | GET_STATUS | - |
 | `0x09` | SET_SPEED | max_speed, accel |
 | `0x0A` | MOVE_STEPS_L | hi, lo |
 | `0x0B` | MOVE_STEPS_R | hi, lo |
 | `0x10` | LED_SET | R, G |
 | `0xFE` | RESET | - |
+
+## Recent Improvements
+
+- **Inference Heartbeat** — GET_STATUS keepalive during slow VLM inference prevents ESP32 timeout
+- **Feature Pre-Filter** — Jaccard similarity pre-filter skips obviously-different map nodes, reducing VLM API calls
+- **Permissive Compiler** — Text commands with trailing punctuation, commas, or markdown formatting now compile
+- **Frame Timestamps** — Frame history tracks capture time; `flushFrameHistory()` clears stale frames after emergency stop
+- **UDP Diagnostics** — Sequence numbers and dropped-frame counter for reliability monitoring
+- **Dreaming Engine** — `npm run dream` extracts recurring motor patterns from traces and promotes them to skills
+- **ESP32 IP Filtering** — Optional `CORTEX_IP` allowlist on firmware rejects unauthorized UDP senders
 
 ## Quickstart
 
@@ -172,12 +205,16 @@ RoClaw/
 │   └── shared/                  # Kinematics, safety, logger
 ├── 4_somatic_firmware/          # C++ for ESP32 MCUs
 ├── 5_hardware_cad/              # STL files & Blender scene
+├── scripts/
+│   └── dream.ts                    # Dreaming Engine — pattern extraction
 ├── docs/                        # Architecture documentation
 └── __tests__/
     └── navigation/
-        ├── semantic-map.e2e.test.ts         # Text-based E2E tests
-        ├── semantic-map-vision.e2e.test.ts  # Vision E2E tests (real images)
-        └── fixtures/indoor_scenes/          # CC0 room photographs
+        ├── semantic-map.e2e.test.ts             # Text-based E2E tests
+        ├── semantic-map-vision.e2e.test.ts      # Vision E2E tests (real images)
+        ├── semantic-map-outdoor.e2e.test.ts     # Outdoor route E2E tests
+        ├── semantic-map-synthetic.e2e.test.ts   # Synthetic E2E tests (no API key)
+        └── fixtures/indoor_scenes/              # CC0 room photographs
 ```
 
 The numbered folders encode the architecture:
