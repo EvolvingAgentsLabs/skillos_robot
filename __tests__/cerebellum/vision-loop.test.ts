@@ -92,6 +92,40 @@ describe('VisionLoop', () => {
     );
   });
 
+  test('processSingleFrame emits arrival event when STOP opcode compiled', async () => {
+    const mockSend = jest.fn().mockResolvedValue(undefined);
+    (transmitter as any).connected = true;
+    (transmitter as any).socket = { send: jest.fn() };
+    transmitter.send = mockSend;
+
+    // AA 07 00 00 07 FF decodes to STOP opcode
+    mockInfer.mockResolvedValue('AA 07 00 00 07 FF');
+
+    const arrivalHandler = jest.fn();
+    visionLoop.on('arrival', arrivalHandler);
+
+    await visionLoop.processSingleFrame('base64imagedata');
+
+    expect(arrivalHandler).toHaveBeenCalledTimes(1);
+    expect(arrivalHandler).toHaveBeenCalledWith(expect.stringContaining('AA 07'));
+  });
+
+  test('processSingleFrame does NOT emit arrival for FORWARD opcode', async () => {
+    const mockSend = jest.fn().mockResolvedValue(undefined);
+    (transmitter as any).connected = true;
+    (transmitter as any).socket = { send: jest.fn() };
+    transmitter.send = mockSend;
+
+    mockInfer.mockResolvedValue('FORWARD 128 128');
+
+    const arrivalHandler = jest.fn();
+    visionLoop.on('arrival', arrivalHandler);
+
+    await visionLoop.processSingleFrame('base64imagedata');
+
+    expect(arrivalHandler).not.toHaveBeenCalled();
+  });
+
   test('processSingleFrame compiles and sends bytecode', async () => {
     const mockSend = jest.fn().mockResolvedValue(undefined);
     (transmitter as any).connected = true;

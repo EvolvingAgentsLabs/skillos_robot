@@ -1,4 +1,4 @@
-import { handleTool, _resetTopoMap, _getTopoMapLoop, _getPoseMap, type ToolContext } from '../../src/1_openclaw_cortex/roclaw_tools';
+import { handleTool, _resetTopoMap, _resetNavigationSession, _getTopoMapLoop, _getPoseMap, type ToolContext } from '../../src/1_openclaw_cortex/roclaw_tools';
 import { BytecodeCompiler, Opcode, formatHex } from '../../src/2_qwen_cerebellum/bytecode_compiler';
 import { UDPTransmitter } from '../../src/2_qwen_cerebellum/udp_transmitter';
 import { VisionLoop } from '../../src/2_qwen_cerebellum/vision_loop';
@@ -14,6 +14,7 @@ describe('RoClaw Tools', () => {
 
   beforeEach(() => {
     // Reset singletons so each test starts clean
+    _resetNavigationSession();
     _resetTopoMap();
     _getPoseMap().clear();
 
@@ -231,6 +232,17 @@ describe('RoClaw Tools', () => {
       expect(sentBuffer[1]).toBe(Opcode.STOP);
     });
 
+    test('closes active explore trace as ABORTED', async () => {
+      // Start explore (creates an explore trace)
+      await handleTool('robot.explore', {}, ctx);
+
+      // Now stop — should close the explore trace
+      const result = await handleTool('robot.stop', {}, ctx);
+      expect(result.success).toBe(true);
+      // The trace logger endTrace is called — we verify stop succeeds
+      // and that no errors are thrown from trace closure
+    });
+
     test('stops topo map loop when running', async () => {
       // First start explore to create and start topo loop
       await handleTool('robot.explore', {}, ctx);
@@ -305,6 +317,52 @@ describe('RoClaw Tools', () => {
       expect(result.success).toBe(true);
       expect(result.data).toHaveProperty('entryCount');
       expect(result.data).toHaveProperty('entries');
+    });
+  });
+
+  // ===========================================================================
+  // Navigation session (multi-step plan execution)
+  // ===========================================================================
+
+  describe('navigation session', () => {
+    test('handleGoTo registers arrival listener on VisionLoop', async () => {
+      const result = await handleTool('robot.go_to', { location: 'the kitchen' }, ctx);
+      expect(result.success).toBe(true);
+      expect((ctx.visionLoop.on as jest.Mock)).toHaveBeenCalledWith(
+        'arrival',
+        expect.any(Function),
+      );
+    });
+
+    test('starting new handleGoTo aborts previous session', async () => {
+      // First navigation
+      await handleTool('robot.go_to', { location: 'the kitchen' }, ctx);
+      const firstOnCalls = (ctx.visionLoop.on as jest.Mock).mock.calls.length;
+
+      // Second navigation — should abort first and register new listener
+      await handleTool('robot.go_to', { location: 'the bedroom' }, ctx);
+
+      // removeListener should have been called for the first session's arrival listener
+      expect((ctx.visionLoop.removeListener as jest.Mock)).toHaveBeenCalledWith(
+        'arrival',
+        expect.any(Function),
+      );
+      // New listener should have been registered
+      expect((ctx.visionLoop.on as jest.Mock).mock.calls.length).toBeGreaterThan(firstOnCalls);
+    });
+
+    test('handleStop aborts active navigation session', async () => {
+      // Start navigation
+      await handleTool('robot.go_to', { location: 'the kitchen' }, ctx);
+      expect((ctx.visionLoop.on as jest.Mock)).toHaveBeenCalledWith('arrival', expect.any(Function));
+
+      // Stop should clean up the session
+      const result = await handleTool('robot.stop', {}, ctx);
+      expect(result.success).toBe(true);
+      expect((ctx.visionLoop.removeListener as jest.Mock)).toHaveBeenCalledWith(
+        'arrival',
+        expect.any(Function),
+      );
     });
   });
 

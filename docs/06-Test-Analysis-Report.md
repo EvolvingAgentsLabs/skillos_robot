@@ -2,7 +2,7 @@
 
 **Date:** March 2, 2026
 **Branch:** main
-**Test Results:** 272 passed, 0 failures (without API key); 30 skipped (API-gated)
+**Test Results:** 278 passed, 0 failures (without API key); 30 skipped (API-gated)
 
 ---
 
@@ -26,8 +26,8 @@ RoClaw's test suite validates the full software stack from VLM inference to byte
 | Memory Manager | `memory-manager.test.ts` | 7 | No | Hardware profile, identity, skills, and traces load from disk |
 | Semantic Map (unit) | `semantic-map.test.ts` | 18 | No | PoseMap CRUD, deduplication, nearest-neighbor, persistence |
 | Semantic Map Loop | `semantic-map-loop.test.ts` | 9 | No | Analysis interval, mutex, failure isolation, event emission |
-| Vision Loop | `vision-loop.test.ts` | 11 | No | Goal management, frame processing pipeline, history buffer |
-| RoClaw Tools | `roclaw-tools.test.ts` | 12 | No | All 9 OpenClaw tool handlers (explore, go_to, stop, status, etc.) |
+| Vision Loop | `vision-loop.test.ts` | 13 | No | Goal management, frame processing pipeline, history buffer, arrival event emission |
+| RoClaw Tools | `roclaw-tools.test.ts` | 18 | No | All 9 OpenClaw tool handlers, navigation session lifecycle, trace closure, abort semantics |
 | Safety Config | `safety-config.test.ts` | 35 | No | Default configs, validation (DC & stepper), PWM/speed/step clamping with distance zones |
 | Hierarchical Trace Logger | `hierarchical-trace-logger.test.ts` | 11 | No | Trace lifecycle (start/append/end), hierarchy levels, outcomes, legacy compat |
 | Strategy Store | `strategy-store.test.ts` | 16 | No | YAML frontmatter parsing, keyword search, negative constraints, reinforcement |
@@ -38,7 +38,7 @@ RoClaw's test suite validates the full software stack from VLM inference to byte
 | Vision E2E | `semantic-map-vision.e2e.test.ts` | 10 | Yes | Real indoor photos through the full pipeline to bytecode |
 | Outdoor E2E | `semantic-map-outdoor.e2e.test.ts` | 8 | Yes | Real walking-route captures with compass heading through full pipeline |
 
-**Totals:** 272 tests (no API key), 30 skipped (with API key) = **302 test cases across 17 suites**
+**Totals:** 278 tests (no API key), 30 skipped (with API key) = **308 test cases across 17 suites**
 
 ### 2.2 The Four Layers of Validation
 
@@ -204,7 +204,7 @@ These are unlikely but possible:
 
 The RoClaw software stack is **well-tested and ready for hardware integration**. The Navigation Chain of Thought pipeline — the core innovation — is validated end-to-end with a real VLM producing real motor commands that compile to valid bytecode. The test suite covers the full path from scene understanding to wheel rotation at the bytecode level.
 
-The gap between "all tests pass" and "robot drives to the kitchen" is primarily **calibration and configuration**, not software correctness. The 272 passing tests (+ 30 API-gated tests) give strong confidence that:
+The gap between "all tests pass" and "robot drives to the kitchen" is primarily **calibration and configuration**, not software correctness. The 278 passing tests (+ 30 API-gated tests) give strong confidence that:
 
 - The bytecode format is correct and the ESP32 will understand it
 - The VLM produces sensible motor commands for indoor navigation

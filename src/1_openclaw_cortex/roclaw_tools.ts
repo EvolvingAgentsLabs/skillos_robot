@@ -13,7 +13,7 @@ import type { InferenceFunction } from '../2_qwen_cerebellum/inference';
 import { MemoryManager } from '../3_llmunix_memory/memory_manager';
 import { PoseMap, SemanticMap } from '../3_llmunix_memory/semantic_map';
 import { SemanticMapLoop } from '../3_llmunix_memory/semantic_map_loop';
-import { HierarchicalPlanner } from './planner';
+import { HierarchicalPlanner, type ExecutionPlan } from './planner';
 import { HierarchyLevel, TraceOutcome } from '../3_llmunix_memory/trace_types';
 import { traceLogger } from '../3_llmunix_memory/trace_logger';
 
@@ -42,6 +42,18 @@ const poseMap = new PoseMap();
 let topoMap: SemanticMap | null = null;
 let topoMapLoop: SemanticMapLoop | null = null;
 let planner: HierarchicalPlanner | null = null;
+
+// Navigation session state for multi-step plan execution
+interface NavigationSession {
+  plan: ExecutionPlan;
+  currentStepIndex: number;
+  currentStepTraceId: string | null;
+  ctx: ToolContext;
+  arrivalListener: (vlmOutput: string) => void;
+}
+
+let activeSession: NavigationSession | null = null;
+let activeExploreTraceId: string | null = null;
 
 function ensurePlanner(ctx: ToolContext): HierarchicalPlanner {
   if (!planner) {
@@ -91,8 +103,41 @@ export function _getTopoMapLoop(): SemanticMapLoop | null {
   return topoMapLoop;
 }
 
+/** Abort the active navigation session and close its traces. */
+function abortActiveSession(outcome: TraceOutcome, reason: string): void {
+  if (!activeSession) return;
+
+  const session = activeSession;
+  activeSession = null;
+
+  // Remove arrival listener
+  session.ctx.visionLoop.removeListener('arrival', session.arrivalListener);
+
+  // Close current step trace
+  if (session.currentStepTraceId) {
+    traceLogger.endTrace(session.currentStepTraceId, outcome, reason);
+  }
+
+  // Close GOAL-level trace
+  traceLogger.endTrace(session.plan.traceId, outcome, reason);
+
+  // Clear VisionLoop hierarchical state
+  session.ctx.visionLoop.setActiveTraceId(null);
+  session.ctx.visionLoop.setConstraints([]);
+}
+
+/** Exposed for testing — reset navigation session state */
+export function _resetNavigationSession(): void {
+  if (activeSession) {
+    activeSession.ctx.visionLoop.removeListener('arrival', activeSession.arrivalListener);
+  }
+  activeSession = null;
+  activeExploreTraceId = null;
+}
+
 /** Exposed for testing — reset lazy singletons */
 export function _resetTopoMap(): void {
+  _resetNavigationSession();
   topoMapLoop?.stop();
   topoMapLoop = null;
   topoMap = null;
@@ -190,6 +235,105 @@ export async function handleTool(
 }
 
 // ---------------------------------------------------------------------------
+// Multi-step plan advancement
+// ---------------------------------------------------------------------------
+
+async function advanceToNextStep(session: NavigationSession, vlmOutput: string): Promise<void> {
+  const { plan, ctx } = session;
+
+  // Close current step trace as SUCCESS
+  if (session.currentStepTraceId) {
+    traceLogger.endTrace(session.currentStepTraceId, TraceOutcome.SUCCESS, vlmOutput);
+    session.currentStepTraceId = null;
+  }
+
+  // Move to next step
+  session.currentStepIndex++;
+
+  if (session.currentStepIndex >= plan.steps.length) {
+    // All steps complete — close GOAL trace as SUCCESS
+    traceLogger.endTrace(plan.traceId, TraceOutcome.SUCCESS, 'All steps completed');
+    ctx.visionLoop.removeListener('arrival', session.arrivalListener);
+    ctx.visionLoop.stop();
+    ctx.visionLoop.setActiveTraceId(null);
+    ctx.visionLoop.setConstraints([]);
+    activeSession = null;
+    logger.info('Tools', `Navigation plan completed: "${plan.mainGoal}"`);
+    return;
+  }
+
+  // More steps remain — plan the next one
+  const nextStep = plan.steps[session.currentStepIndex];
+  logger.info('Tools', `Advancing to step ${session.currentStepIndex + 1}/${plan.steps.length}: "${nextStep.description}"`);
+
+  // Level 2→3 decomposition via planStrategicStep
+  const hp = ensurePlanner(ctx);
+  let tacticalGoal = nextStep.description;
+  let stepConstraints = nextStep.constraints;
+  let strategyHint = '';
+
+  try {
+    const frameBase64 = ctx.visionLoop.getLatestFrameBase64();
+    let currentScene = 'Unknown scene';
+    if (frameBase64) {
+      try {
+        currentScene = await ctx.infer(
+          'You are a robot with a camera. Briefly describe what you see.',
+          'Describe the current scene.',
+          [frameBase64],
+        );
+      } catch { /* scene description is optional */ }
+    }
+
+    const tactical = await hp.planStrategicStep(nextStep, currentScene, plan.traceId);
+    session.currentStepTraceId = tactical.traceId;
+    tacticalGoal = tactical.tacticalGoal;
+    stepConstraints = tactical.constraints;
+    strategyHint = tactical.strategyHint;
+  } catch (err) {
+    // Fall back to using the step description directly
+    session.currentStepTraceId = traceLogger.startTrace(
+      HierarchyLevel.STRATEGY, nextStep.description, { parentTraceId: plan.traceId },
+    );
+    logger.debug('Tools', 'Strategic planning for next step failed, using description', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Use topo map for navigation if available
+  let navGoal = tacticalGoal;
+  try {
+    const sm = ensureTopoMap(ctx);
+    if (sm.getAllNodes().length > 0 && nextStep.targetLabel) {
+      const frameBase64 = ctx.visionLoop.getLatestFrameBase64();
+      if (frameBase64) {
+        const sceneDesc = await ctx.infer(
+          'You are a robot with a camera. Briefly describe what you see.',
+          'Describe the current scene.',
+          [frameBase64],
+        );
+        const decision = await sm.planNavigation(sceneDesc, nextStep.targetLabel, strategyHint, stepConstraints);
+        if (decision && decision.confidence > 0.5) {
+          navGoal = `${tacticalGoal} [TopoMap: "${decision.reasoning}"]`;
+        }
+      }
+    }
+  } catch {
+    // Topo navigation is optional
+  }
+
+  const goalWithConstraints = stepConstraints.length > 0
+    ? `${navGoal}\nConstraints: ${stepConstraints.join('; ')}`
+    : navGoal;
+
+  // Update VisionLoop goal (no stop/restart — just update for next frame)
+  ctx.visionLoop.setGoal(goalWithConstraints);
+  if (session.currentStepTraceId) {
+    ctx.visionLoop.setActiveTraceId(session.currentStepTraceId);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Individual handlers
 // ---------------------------------------------------------------------------
 
@@ -244,11 +388,21 @@ async function handleExplore(ctx: ToolContext, constraints?: string): Promise<To
     ? `${baseGoal}\nConstraints: ${allConstraints.join('; ')}`
     : baseGoal;
 
+  // Abort any active navigation session or previous explore
+  abortActiveSession(TraceOutcome.ABORTED, 'New explore started');
+  if (activeExploreTraceId) {
+    traceLogger.endTrace(activeExploreTraceId, TraceOutcome.ABORTED, 'New explore started');
+  }
+
+  // Create GOAL-level trace for this exploration
+  activeExploreTraceId = traceLogger.startTrace(HierarchyLevel.GOAL, `Explore: ${constraints || 'autonomous'}`);
+
   try {
     if (memoryConstraints.length > 0) {
       ctx.visionLoop.setConstraints(memoryConstraints);
     }
 
+    ctx.visionLoop.setActiveTraceId(activeExploreTraceId);
     await ctx.visionLoop.start(goal);
 
     // Start topological mapping in the background
@@ -265,6 +419,12 @@ async function handleExplore(ctx: ToolContext, constraints?: string): Promise<To
       message: 'Exploration started. The robot is now autonomously navigating.',
     };
   } catch (error) {
+    // Close explore trace on failure
+    if (activeExploreTraceId) {
+      traceLogger.endTrace(activeExploreTraceId, TraceOutcome.FAILURE,
+        error instanceof Error ? error.message : String(error));
+      activeExploreTraceId = null;
+    }
     return {
       success: false,
       message: `Failed to start exploration: ${error instanceof Error ? error.message : String(error)}`,
@@ -285,6 +445,8 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
   let plannerHint = '';
   let planConstraints: string[] = [];
   let activeTraceId: string | null = null;
+  let plan: ExecutionPlan | null = null;
+  let strategyHintForNav = '';
 
   try {
     const hp = ensurePlanner(ctx);
@@ -302,7 +464,7 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
       } catch { /* scene description is optional */ }
     }
 
-    const plan = await hp.planGoal(location, currentScene);
+    plan = await hp.planGoal(location, currentScene);
     activeTraceId = plan.traceId;
 
     if (plan.steps.length > 0) {
@@ -316,6 +478,7 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
       // Build strategy hint from first step
       const firstStep = plan.steps[0];
       if (firstStep.strategy) {
+        strategyHintForNav = `${firstStep.strategy.title}: ${firstStep.strategy.steps.join(' → ')}`;
         plannerHint = ` [Strategy: "${firstStep.strategy.title}" — ${firstStep.strategy.steps.join(' → ')}]`;
       }
       if (plan.steps.length > 1) {
@@ -341,7 +504,7 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
           'Describe the current scene.',
           [frameBase64],
         );
-        const decision = await sm.planNavigation(sceneDesc, location);
+        const decision = await sm.planNavigation(sceneDesc, location, strategyHintForNav, planConstraints);
         if (decision && decision.confidence > 0.5) {
           topoNavHint = ` [TopoMap: "${decision.reasoning}" (confidence: ${decision.confidence.toFixed(2)})]`;
           logger.info('Tools', `Topo navigation plan: ${decision.action} — ${decision.reasoning}`);
@@ -377,6 +540,13 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
     ? `${baseGoal}\nConstraints: ${allConstraints.join('; ')}`
     : baseGoal;
 
+  // Abort any previous navigation session or explore trace before starting new one
+  abortActiveSession(TraceOutcome.ABORTED, 'New navigation started');
+  if (activeExploreTraceId) {
+    traceLogger.endTrace(activeExploreTraceId, TraceOutcome.ABORTED, 'New navigation started');
+    activeExploreTraceId = null;
+  }
+
   try {
     // Set hierarchical tracing on VisionLoop
     if (activeTraceId) {
@@ -395,6 +565,25 @@ async function handleGoTo(location: string, ctx: ToolContext, constraints?: stri
       logger.warn('Tools', 'Failed to start topo map loop', {
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+
+    // Create NavigationSession with arrival listener for multi-step plan execution
+    if (plan) {
+      const arrivalListener = (vlmOutput: string) => {
+        if (activeSession) {
+          advanceToNextStep(activeSession, vlmOutput).catch(err => {
+            abortActiveSession(TraceOutcome.FAILURE, err instanceof Error ? err.message : String(err));
+          });
+        }
+      };
+      activeSession = {
+        plan,
+        currentStepIndex: 0,
+        currentStepTraceId: null,
+        ctx,
+        arrivalListener,
+      };
+      ctx.visionLoop.on('arrival', arrivalListener);
     }
 
     return {
@@ -475,6 +664,13 @@ async function handleAnalyzeScene(ctx: ToolContext): Promise<ToolResult> {
 
 async function handleStop(ctx: ToolContext): Promise<ToolResult> {
   logger.info('Tools', 'robot.stop invoked');
+
+  // Abort any active navigation session or explore trace
+  abortActiveSession(TraceOutcome.ABORTED, 'User-initiated stop');
+  if (activeExploreTraceId) {
+    traceLogger.endTrace(activeExploreTraceId, TraceOutcome.ABORTED, 'User-initiated stop');
+    activeExploreTraceId = null;
+  }
 
   try {
     // Stop the vision loop and topo map loop

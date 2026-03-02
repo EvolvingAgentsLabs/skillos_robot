@@ -76,12 +76,16 @@ The **Hierarchical Planner** (`src/1_openclaw_cortex/planner.ts`) sits in the Co
 
 ## The Cortex
 
-The Cortex handles goal decomposition and planning:
+The Cortex handles goal decomposition, planning, and navigation session management:
 
 1. Receives a tool invocation from OpenClaw
 2. Queries the **Hierarchical Planner** for a multi-step plan (if strategies exist)
 3. Injects strategy hints and negative constraints into the Cerebellum's goal
-4. Starts/stops the vision loop with trace IDs for hierarchical logging
-5. Reports results back to OpenClaw
+4. Starts the VisionLoop with trace IDs for hierarchical logging
+5. Creates a **NavigationSession** that listens for `'arrival'` events from the Cerebellum
+6. On arrival: closes the current step trace as SUCCESS, advances to the next step via `planStrategicStep()`, or completes the GOAL trace if all steps are done
+7. Reports results back to OpenClaw
+
+The **arrival event** is the critical feedback mechanism that closes the Cortex↔Cerebellum loop. When the VisionLoop compiles a STOP opcode (meaning the VLM decided the robot has arrived), it emits `'arrival'`. The Cortex's NavigationSession listens for this event and either advances the multi-step plan or declares the navigation complete. Without this, traces would never close with SUCCESS and multi-step plans would never advance past the first step.
 
 Path planning and localization live in the **Semantic Map** — a VLM-powered topological graph that runs as an async sidecar to the Cerebellum. It analyzes camera frames to build a map of locations (nodes) and navigation paths (edges), enabling re-identification of visited places and multi-hop pathfinding. See [LLMunix Evolution](04-LLMunix-Evolution.md) for details.

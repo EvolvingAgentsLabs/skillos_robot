@@ -10,7 +10,7 @@
 import { EventEmitter } from 'events';
 import * as http from 'http';
 import { logger } from '../shared/logger';
-import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from './bytecode_compiler';
+import { BytecodeCompiler, Opcode, encodeFrame, decodeFrame, formatHex } from './bytecode_compiler';
 import { UDPTransmitter } from './udp_transmitter';
 import { appendTrace, traceLogger } from '../3_llmunix_memory/trace_logger';
 import type { InferenceFunction } from './inference';
@@ -203,6 +203,11 @@ export class VisionLoop extends EventEmitter {
 
       await this.transmitter.send(bytecode);
       this.statsData.bytecodesSent++;
+
+      const decoded = decodeFrame(bytecode);
+      if (decoded && decoded.opcode === Opcode.STOP) {
+        this.emit('arrival', vlmOutput);
+      }
 
       return bytecode;
     } catch (error) {
@@ -467,6 +472,12 @@ export class VisionLoop extends EventEmitter {
         this.statsData.framesProcessed++;
 
         this.emit('bytecode', bytecode, vlmOutput);
+
+        const decoded = decodeFrame(bytecode);
+        if (decoded && decoded.opcode === Opcode.STOP) {
+          this.emit('arrival', vlmOutput);
+        }
+
         logger.debug('VisionLoop', `Frame → ${formatHex(bytecode)}`);
 
         // Hierarchical logging: use traceLogger if activeTraceId is set

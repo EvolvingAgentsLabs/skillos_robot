@@ -182,6 +182,7 @@ Strategies are stored as markdown with YAML frontmatter in `src/3_llmunix_memory
 
 ## Recent Improvements
 
+- **Arrival Feedback Loop** — VisionLoop emits `'arrival'` on STOP opcode, closing the Cortex↔Cerebellum loop: multi-step plans auto-advance, traces close with SUCCESS, and `planStrategicStep()` decomposes each step
 - **Hierarchical Planning** — 4-tier cognitive architecture with strategy-informed goal decomposition
 - **Strategy Store** — Hierarchical memory system with per-level strategies and negative constraints
 - **Dreaming Engine v2** — LLM-powered 3-phase memory consolidation (SWS → REM → Consolidation)
