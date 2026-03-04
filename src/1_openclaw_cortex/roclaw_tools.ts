@@ -10,6 +10,7 @@ import { BytecodeCompiler, Opcode, formatHex } from '../2_qwen_cerebellum/byteco
 import { UDPTransmitter } from '../2_qwen_cerebellum/udp_transmitter';
 import { VisionLoop } from '../2_qwen_cerebellum/vision_loop';
 import { CerebellumInference, type InferenceFunction } from '../2_qwen_cerebellum/inference';
+import { GeminiRoboticsInference } from '../2_qwen_cerebellum/gemini_robotics';
 import { MemoryManager } from '../3_llmunix_memory/memory_manager';
 import { PoseMap, SemanticMap } from '../3_llmunix_memory/semantic_map';
 import { SemanticMapLoop } from '../3_llmunix_memory/semantic_map_loop';
@@ -44,7 +45,7 @@ let topoMapLoop: SemanticMapLoop | null = null;
 let planner: HierarchicalPlanner | null = null;
 
 // Dedicated inference for scene analysis — higher token limit and longer timeout than bytecode inference
-let mapInference: CerebellumInference | null = null;
+let mapInferenceFunc: InferenceFunction | null = null;
 
 // Navigation session state for multi-step plan execution
 interface NavigationSession {
@@ -62,17 +63,33 @@ let activeSession: NavigationSession | null = null;
 let activeExploreTraceId: string | null = null;
 
 function ensureMapInfer(): InferenceFunction {
-  if (!mapInference) {
-    mapInference = new CerebellumInference({
-      apiKey: process.env.OPENROUTER_API_KEY || '',
-      model: process.env.QWEN_MODEL || 'qwen/qwen-2.5-vl-72b-instruct',
-      maxTokens: 512,
-      timeoutMs: 30000,
-      temperature: 0.3,
-      ...(process.env.LOCAL_INFERENCE_URL ? { apiBaseUrl: process.env.LOCAL_INFERENCE_URL } : {}),
-    });
+  if (!mapInferenceFunc) {
+    const googleApiKey = process.env.GOOGLE_API_KEY;
+    if (googleApiKey) {
+      // Use Gemini for scene analysis (no tool calling — text analysis only)
+      const gemini = new GeminiRoboticsInference({
+        apiKey: googleApiKey,
+        model: process.env.GEMINI_MODEL || 'gemini-robotics-er-1.5-preview',
+        maxOutputTokens: 1024,
+        timeoutMs: 30000,
+        temperature: 0.3,
+        thinkingBudget: 0,
+        useToolCalling: false,
+      });
+      mapInferenceFunc = gemini.createInferenceFunction();
+    } else {
+      const cerebellum = new CerebellumInference({
+        apiKey: process.env.OPENROUTER_API_KEY || '',
+        model: process.env.QWEN_MODEL || 'qwen/qwen-2.5-vl-72b-instruct',
+        maxTokens: 512,
+        timeoutMs: 30000,
+        temperature: 0.3,
+        ...(process.env.LOCAL_INFERENCE_URL ? { apiBaseUrl: process.env.LOCAL_INFERENCE_URL } : {}),
+      });
+      mapInferenceFunc = cerebellum.createInferenceFunction();
+    }
   }
-  return mapInference.createInferenceFunction();
+  return mapInferenceFunc;
 }
 
 function ensurePlanner(ctx: ToolContext): HierarchicalPlanner {
@@ -166,7 +183,7 @@ export function _resetTopoMap(): void {
   topoMapLoop = null;
   topoMap = null;
   planner = null;
-  mapInference = null;
+  mapInferenceFunc = null;
 }
 
 // =============================================================================

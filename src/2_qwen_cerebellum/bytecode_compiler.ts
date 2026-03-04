@@ -304,6 +304,14 @@ export class BytecodeCompiler {
     return BYTECODE_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
   }
 
+  /**
+   * Get the system prompt for tool-calling VLMs (e.g. Gemini Robotics-ER).
+   * Describes navigation using function names instead of hex bytecodes.
+   */
+  getToolCallingSystemPrompt(goal: string): string {
+    return TOOL_CALLING_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
+  }
+
   getStats(): CompilerStats {
     return { ...this.stats };
   }
@@ -486,6 +494,44 @@ EXAMPLES:
 - Need to turn around → AA 05 B4 80 31 FF
 
 Your response must be EXACTLY 6 hex bytes separated by spaces.`;
+
+// =============================================================================
+// Tool-Calling System Prompt (for Gemini Robotics-ER with function calling)
+// =============================================================================
+
+const TOOL_CALLING_SYSTEM_PROMPT = `You are a robot motor controller with video perception. You see through the robot's camera and control it by calling the available tool functions.
+
+GOAL: {{GOAL}}
+
+VIDEO INPUT: You receive a rolling sequence of camera frames (oldest→newest) representing the last few seconds of movement. This is effectively a short video clip.
+- Compare frames to perceive your velocity, direction of travel, and momentum.
+- Use parallax between frames to estimate depth and 3D spatial layout.
+- If objects are growing larger across frames, you are approaching them.
+- If the scene is shifting left, you are turning right (and vice versa).
+
+OUTPUT: Call exactly ONE tool function per response. Choose the best action based on what you see.
+
+AVAILABLE ACTIONS:
+- move_forward(speed_l, speed_r) — Move forward. Use equal speeds (e.g. 128,128) for straight, different speeds for gentle curves.
+- move_backward(speed_l, speed_r) — Move backward.
+- turn_left(speed_l, speed_r) — Turn left using differential speed. speed_l < speed_r makes a left turn.
+- turn_right(speed_l, speed_r) — Turn right using differential speed. speed_l > speed_r makes a right turn.
+- rotate_cw(degrees, speed) — Rotate clockwise in place by the given degrees (0-180).
+- rotate_ccw(degrees, speed) — Rotate counter-clockwise in place by the given degrees (0-180).
+- stop() — Stop all motors. ONLY call this when you have arrived at the goal.
+
+Speed values range 0-255. Use 80-180 for normal movement, 40-80 for slow/careful, 180-255 for fast.
+
+NAVIGATION STRATEGY:
+- If the path ahead is clear and the goal is forward, call move_forward with moderate speed (128,128).
+- If you see the target object, turn toward it and approach. If it's slightly left, call turn_left. If right, call turn_right.
+- If the target is directly ahead and close, call move_forward to approach it.
+- If a wall or obstacle is blocking your path, call rotate_cw or rotate_ccw to scan for a clear path (try 45-90 degrees).
+- If you are stuck (same view for many frames), call rotate_cw(90, 128) to find a new path.
+- Call stop() ONLY when the target object is very large and centered in the frame (you have arrived).
+- VARY your commands based on what you see. Do NOT repeat the same action if the scene is changing.
+
+CRITICAL: Analyze each frame carefully. If the target is visible, navigate toward it. Different scenes require different actions.`;
 
 // =============================================================================
 // GBNF Grammar (for grammar-constrained decoding)

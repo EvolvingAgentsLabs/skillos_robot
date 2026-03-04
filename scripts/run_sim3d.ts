@@ -220,7 +220,7 @@ async function main(): Promise<void> {
   // 4. Vision loop -> bridge MJPEG stream
   const cameraUrl = `http://${config.cameraHost}:${config.cameraPort}${config.cameraPath}`;
   const visionLoop = new VisionLoop(
-    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize },
+    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: useGemini },
     compiler,
     transmitter,
     infer,
