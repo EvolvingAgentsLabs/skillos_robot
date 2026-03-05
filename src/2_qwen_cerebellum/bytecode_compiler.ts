@@ -196,8 +196,23 @@ export interface CompilerStats {
   grammarHits: number;
   fewshotHits: number;
   hostFallbacks: number;
+  toolcallHits: number;
   failures: number;
 }
+
+// =============================================================================
+// Tool Call → Opcode Mapping (for Gemini structured tool calling)
+// =============================================================================
+
+const TOOL_OPCODE_MAP: Record<string, number> = {
+  move_forward: Opcode.MOVE_FORWARD,
+  move_backward: Opcode.MOVE_BACKWARD,
+  turn_left: Opcode.TURN_LEFT,
+  turn_right: Opcode.TURN_RIGHT,
+  rotate_cw: Opcode.ROTATE_CW,
+  rotate_ccw: Opcode.ROTATE_CCW,
+  stop: Opcode.STOP,
+};
 
 export class BytecodeCompiler {
   private mode: CompilationMode;
@@ -206,6 +221,7 @@ export class BytecodeCompiler {
     grammarHits: 0,
     fewshotHits: 0,
     hostFallbacks: 0,
+    toolcallHits: 0,
     failures: 0,
   };
 
@@ -219,6 +235,15 @@ export class BytecodeCompiler {
    */
   compile(vlmOutput: string): Buffer | null {
     const trimmed = vlmOutput.trim();
+
+    // Mode 0: Tool call — Gemini outputs TOOLCALL:{...} via structured function calling
+    const toolcallResult = this.tryParseToolCall(trimmed);
+    if (toolcallResult) {
+      this.stats.toolcallHits++;
+      this.stats.framesCompiled++;
+      logger.debug('Compiler', 'Tool call mode', { hex: formatHex(toolcallResult) });
+      return toolcallResult;
+    }
 
     // Mode 1: Grammar-constrained — VLM outputs raw hex like "AA 01 64 64 CB FF"
     const hexResult = this.tryParseHex(trimmed);
@@ -279,6 +304,14 @@ export class BytecodeCompiler {
     return BYTECODE_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
   }
 
+  /**
+   * Get the system prompt for tool-calling VLMs (e.g. Gemini Robotics-ER).
+   * Describes navigation using function names instead of hex bytecodes.
+   */
+  getToolCallingSystemPrompt(goal: string): string {
+    return TOOL_CALLING_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
+  }
+
   getStats(): CompilerStats {
     return { ...this.stats };
   }
@@ -294,6 +327,50 @@ export class BytecodeCompiler {
   // ---------------------------------------------------------------------------
   // Private
   // ---------------------------------------------------------------------------
+
+  private tryParseToolCall(text: string): Buffer | null {
+    if (!text.startsWith('TOOLCALL:')) return null;
+
+    try {
+      const json = JSON.parse(text.slice('TOOLCALL:'.length));
+      const name = json.name as string;
+      const args = json.args as Record<string, number> | undefined;
+
+      const opcode = TOOL_OPCODE_MAP[name];
+      if (opcode === undefined) return null;
+
+      let paramLeft = 0;
+      let paramRight = 0;
+
+      if (args) {
+        let rawL: number;
+        let rawR: number;
+
+        if (name === 'rotate_cw' || name === 'rotate_ccw') {
+          rawL = args.degrees ?? 0;
+          rawR = args.speed ?? 0;
+        } else {
+          rawL = args.speed_l ?? 0;
+          rawR = args.speed_r ?? 0;
+        }
+
+        // Detect normalized 0-1 range: if both values are <= 1.0 and at least
+        // one is fractional, scale to 0-255 (Gemini Robotics-ER sometimes
+        // outputs normalized motor values instead of byte-range integers)
+        if (rawL <= 1.0 && rawR <= 1.0 && (rawL % 1 !== 0 || rawR % 1 !== 0)) {
+          rawL = rawL * 255;
+          rawR = rawR * 255;
+        }
+
+        paramLeft = Math.max(0, Math.min(255, Math.round(rawL)));
+        paramRight = Math.max(0, Math.min(255, Math.round(rawR)));
+      }
+
+      return encodeFrame({ opcode, paramLeft, paramRight });
+    } catch {
+      return null;
+    }
+  }
 
   private tryParseHex(text: string): Buffer | null {
     // Match exactly 6 hex bytes: "AA 01 64 64 CB FF"
@@ -417,6 +494,44 @@ EXAMPLES:
 - Need to turn around → AA 05 B4 80 31 FF
 
 Your response must be EXACTLY 6 hex bytes separated by spaces.`;
+
+// =============================================================================
+// Tool-Calling System Prompt (for Gemini Robotics-ER with function calling)
+// =============================================================================
+
+const TOOL_CALLING_SYSTEM_PROMPT = `You are a robot motor controller with video perception. You see through the robot's camera and control it by calling the available tool functions.
+
+GOAL: {{GOAL}}
+
+VIDEO INPUT: You receive a rolling sequence of camera frames (oldest→newest) representing the last few seconds of movement. This is effectively a short video clip.
+- Compare frames to perceive your velocity, direction of travel, and momentum.
+- Use parallax between frames to estimate depth and 3D spatial layout.
+- If objects are growing larger across frames, you are approaching them.
+- If the scene is shifting left, you are turning right (and vice versa).
+
+OUTPUT: Call exactly ONE tool function per response. Choose the best action based on what you see.
+
+AVAILABLE ACTIONS:
+- move_forward(speed_l, speed_r) — Move forward. Use equal speeds (e.g. 128,128) for straight, different speeds for gentle curves.
+- move_backward(speed_l, speed_r) — Move backward.
+- turn_left(speed_l, speed_r) — Turn left using differential speed. speed_l < speed_r makes a left turn.
+- turn_right(speed_l, speed_r) — Turn right using differential speed. speed_l > speed_r makes a right turn.
+- rotate_cw(degrees, speed) — Rotate clockwise in place by the given degrees (0-180).
+- rotate_ccw(degrees, speed) — Rotate counter-clockwise in place by the given degrees (0-180).
+- stop() — Stop all motors. ONLY call this when you have arrived at the goal.
+
+Speed values range 0-255. Use 80-180 for normal movement, 40-80 for slow/careful, 180-255 for fast.
+
+NAVIGATION STRATEGY:
+- If the path ahead is clear and the goal is forward, call move_forward with moderate speed (128,128).
+- If you see the target object, turn toward it and approach. If it's slightly left, call turn_left. If right, call turn_right.
+- If the target is directly ahead and close, call move_forward to approach it.
+- If a wall or obstacle is blocking your path, call rotate_cw or rotate_ccw to scan for a clear path (try 45-90 degrees).
+- If you are stuck (same view for many frames), call rotate_cw(90, 128) to find a new path.
+- Call stop() ONLY when the target object is very large and centered in the frame (you have arrived).
+- VARY your commands based on what you see. Do NOT repeat the same action if the scene is changing.
+
+CRITICAL: Analyze each frame carefully. If the target is visible, navigate toward it. Different scenes require different actions.`;
 
 // =============================================================================
 // GBNF Grammar (for grammar-constrained decoding)

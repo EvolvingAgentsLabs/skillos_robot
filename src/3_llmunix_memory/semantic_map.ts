@@ -37,6 +37,19 @@ export interface SemanticMapEntry {
 }
 
 // =============================================================================
+// Types — Spatial Features (Gemini bounding box grounding)
+// =============================================================================
+
+export interface SpatialFeature {
+  /** Object label (e.g., "red cube", "door") */
+  label: string;
+  /** Bounding box in normalized 0-1000 coordinate system */
+  bbox: { x: number; y: number; w: number; h: number };
+  /** Center point computed from bbox */
+  center: { x: number; y: number };
+}
+
+// =============================================================================
 // Types — SemanticMap (VLM-powered topological graph)
 // =============================================================================
 
@@ -51,6 +64,7 @@ export interface SemanticNode {
   lastVisited: number;
   position?: { x: number; y: number; heading: number };
   featureFingerprint?: string;
+  spatialFeatures?: SpatialFeature[];
 }
 
 export interface SemanticEdge {
@@ -68,6 +82,7 @@ export interface SceneAnalysis {
   features: string[];
   navigationHints: string[];
   confidence: number;
+  spatialFeatures?: SpatialFeature[];
 }
 
 export interface NavigationDecision {
@@ -114,6 +129,28 @@ Output ONLY valid JSON (no markdown, no explanation):
   "isSameLocation": true,
   "confidence": 0.9,
   "reasoning": "Both scenes show the same kitchen with white cabinets and gas stove"
+}`;
+
+const SCENE_ANALYSIS_SPATIAL_SYSTEM = `You are a robot's spatial perception system with bounding box grounding. You analyze scenes and output structured JSON with spatial coordinates.
+
+You will receive either a text description or actual camera images showing what the robot currently sees.
+Analyze the scene and identify:
+1. What type of location/room this is
+2. Key visual features that identify this location
+3. Visible exits, doors, or navigable paths
+4. Bounding boxes for key objects in normalized 0-1000 coordinate system
+
+Output ONLY valid JSON (no markdown, no explanation) in this format:
+{
+  "locationLabel": "kitchen",
+  "description": "A small kitchen with white cabinets and a gas stove",
+  "features": ["white cabinets", "gas stove", "tile floor", "window above sink"],
+  "navigationHints": ["doorway to the left leads to hallway", "open passage ahead"],
+  "confidence": 0.85,
+  "spatialFeatures": [
+    {"label": "gas stove", "bbox": {"x": 400, "y": 300, "w": 200, "h": 150}},
+    {"label": "doorway", "bbox": {"x": 50, "y": 200, "w": 100, "h": 400}}
+  ]
 }`;
 
 const NAVIGATION_SYSTEM = `You are a robot's navigation planner. Given the robot's current scene, its known map of locations, and a target destination, decide the best motor action.
@@ -402,15 +439,39 @@ export class SemanticMap {
    *
    * @param sceneDescription Text description of the scene (or prompt for image analysis)
    * @param images Optional base64-encoded images to pass to the VLM for direct vision analysis
+   * @param options Optional settings: spatialGrounding requests bounding box data
    */
-  async analyzeScene(sceneDescription: string, images?: string[]): Promise<SceneAnalysis | null> {
+  async analyzeScene(
+    sceneDescription: string,
+    images?: string[],
+    options?: { spatialGrounding?: boolean },
+  ): Promise<SceneAnalysis | null> {
+    const systemPrompt = options?.spatialGrounding
+      ? SCENE_ANALYSIS_SPATIAL_SYSTEM
+      : SCENE_ANALYSIS_SYSTEM;
+
     const response = await this.infer(
-      SCENE_ANALYSIS_SYSTEM,
+      systemPrompt,
       `The robot's camera currently sees:\n\n${sceneDescription}`,
       images,
     );
 
-    return parseJSONSafe<SceneAnalysis>(response);
+    const analysis = parseJSONSafe<SceneAnalysis & { spatialFeatures?: Array<{ label: string; bbox: { x: number; y: number; w: number; h: number } }> }>(response);
+    if (!analysis) return null;
+
+    // Compute center points for spatial features
+    if (analysis.spatialFeatures) {
+      analysis.spatialFeatures = analysis.spatialFeatures.map(sf => ({
+        label: sf.label,
+        bbox: sf.bbox,
+        center: {
+          x: sf.bbox.x + sf.bbox.w / 2,
+          y: sf.bbox.y + sf.bbox.h / 2,
+        },
+      }));
+    }
+
+    return analysis;
   }
 
   // ---------------------------------------------------------------------------
@@ -510,6 +571,7 @@ export class SemanticMap {
       node.lastVisited = now;
       node.featureFingerprint = fingerprint;
       if (pose) node.position = pose;
+      if (analysis.spatialFeatures) node.spatialFeatures = analysis.spatialFeatures;
     } else {
       // Create new node
       nodeId = `loc_${this.nextId++}`;
@@ -525,6 +587,7 @@ export class SemanticMap {
         lastVisited: now,
         position: pose,
         featureFingerprint: fingerprint,
+        ...(analysis.spatialFeatures ? { spatialFeatures: analysis.spatialFeatures } : {}),
       });
     }
 
@@ -541,6 +604,27 @@ export class SemanticMap {
   // ---------------------------------------------------------------------------
   // Navigation Planning
   // ---------------------------------------------------------------------------
+
+  /**
+   * Compute a directional hint from a spatial feature's bounding box center.
+   * Returns "left", "right", "center", or null if target not found.
+   */
+  getSpatialNavigationHint(
+    targetLabel: string,
+    spatialFeatures: SpatialFeature[],
+  ): string | null {
+    const lower = targetLabel.toLowerCase();
+    const match = spatialFeatures.find(sf =>
+      sf.label.toLowerCase().includes(lower) || lower.includes(sf.label.toLowerCase()),
+    );
+    if (!match) return null;
+
+    const cx = match.center.x;
+    // In 0-1000 coordinate system: <333 = left, >666 = right, else center
+    if (cx < 333) return `[SPATIAL] "${match.label}" is to the LEFT (x=${cx})`;
+    if (cx > 666) return `[SPATIAL] "${match.label}" is to the RIGHT (x=${cx})`;
+    return `[SPATIAL] "${match.label}" is CENTERED (x=${cx})`;
+  }
 
   /**
    * Given the current scene and a target location label, decide the next action.
@@ -567,6 +651,17 @@ export class SemanticMap {
     }
     if (constraints && constraints.length > 0) {
       promptParts.push('', 'Active constraints:', ...constraints.map(c => `- ${c}`));
+    }
+
+    // Inject spatial hint if current node has spatial features
+    if (this.currentNodeId) {
+      const currentNode = this.nodes.get(this.currentNodeId);
+      if (currentNode?.spatialFeatures) {
+        const hint = this.getSpatialNavigationHint(targetLabel, currentNode.spatialFeatures);
+        if (hint) {
+          promptParts.push('', `Spatial grounding: ${hint}`);
+        }
+      }
     }
 
     promptParts.push('', 'What motor action should the robot take to navigate toward the target?');

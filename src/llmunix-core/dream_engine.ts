@@ -476,6 +476,7 @@ export class DreamEngine {
               preconditions: string[];
               steps: string[];
               negative_constraints: string[];
+              spatial_rules?: string[];
             }>(response);
 
             if (parsed) {
@@ -487,6 +488,7 @@ export class DreamEngine {
                 preconditions: parsed.preconditions || bestMatch.preconditions,
                 steps: parsed.steps || bestMatch.steps,
                 negativeConstraints: parsed.negative_constraints || bestMatch.negativeConstraints,
+                spatialRules: parsed.spatial_rules || bestMatch.spatialRules,
                 successCount: bestMatch.successCount + 1,
                 confidence: Math.min(1.0, bestMatch.confidence + 0.05),
                 sourceTraceIds: [
@@ -512,6 +514,7 @@ export class DreamEngine {
               preconditions: string[];
               steps: string[];
               negative_constraints: string[];
+              spatial_rules?: string[];
             }>(response);
 
             if (parsed && parsed.title && parsed.steps) {
@@ -525,6 +528,7 @@ export class DreamEngine {
                 triggerGoals: parsed.trigger_goals || [],
                 steps: parsed.steps,
                 negativeConstraints: parsed.negative_constraints || [],
+                ...(parsed.spatial_rules?.length ? { spatialRules: parsed.spatial_rules } : {}),
                 confidence: 0.5,
                 successCount: 1,
                 failureCount: 0,

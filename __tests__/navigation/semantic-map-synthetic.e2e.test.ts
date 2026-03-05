@@ -20,6 +20,7 @@ import {
   generateFeatureFingerprint,
   type SceneAnalysis,
   type SemanticNode,
+  type SpatialFeature,
 } from '../../src/3_llmunix_memory/semantic_map';
 import type { InferenceFunction } from '../../src/2_qwen_cerebellum/inference';
 import {
@@ -586,6 +587,137 @@ describe('Synthetic E2E — New Feature Integration', () => {
     expect(node2!.featureFingerprint).toBeDefined();
     // Fingerprint may have been updated based on the new feature set
     expect(node2!.visitCount).toBe(2);
+  });
+});
+
+// =============================================================================
+// C2. Spatial Feature Integration
+// =============================================================================
+
+describe('Synthetic E2E — Spatial Feature Integration', () => {
+  test('C15: getSpatialNavigationHint returns LEFT for low x', () => {
+    const mockInfer = createMockInference();
+    const map = new SemanticMap(mockInfer);
+
+    const features: SpatialFeature[] = [
+      { label: 'red cube', bbox: { x: 50, y: 200, w: 100, h: 100 }, center: { x: 100, y: 250 } },
+    ];
+
+    const hint = map.getSpatialNavigationHint('red cube', features);
+    expect(hint).not.toBeNull();
+    expect(hint).toContain('LEFT');
+    expect(hint).toContain('x=100');
+  });
+
+  test('C16: getSpatialNavigationHint returns RIGHT for high x', () => {
+    const mockInfer = createMockInference();
+    const map = new SemanticMap(mockInfer);
+
+    const features: SpatialFeature[] = [
+      { label: 'door', bbox: { x: 700, y: 200, w: 150, h: 400 }, center: { x: 775, y: 400 } },
+    ];
+
+    const hint = map.getSpatialNavigationHint('door', features);
+    expect(hint).not.toBeNull();
+    expect(hint).toContain('RIGHT');
+  });
+
+  test('C17: getSpatialNavigationHint returns CENTERED for middle x', () => {
+    const mockInfer = createMockInference();
+    const map = new SemanticMap(mockInfer);
+
+    const features: SpatialFeature[] = [
+      { label: 'hallway', bbox: { x: 350, y: 100, w: 300, h: 500 }, center: { x: 500, y: 350 } },
+    ];
+
+    const hint = map.getSpatialNavigationHint('hallway', features);
+    expect(hint).not.toBeNull();
+    expect(hint).toContain('CENTERED');
+  });
+
+  test('C18: getSpatialNavigationHint returns null for unknown target', () => {
+    const mockInfer = createMockInference();
+    const map = new SemanticMap(mockInfer);
+
+    const features: SpatialFeature[] = [
+      { label: 'door', bbox: { x: 100, y: 100, w: 100, h: 100 }, center: { x: 150, y: 150 } },
+    ];
+
+    const hint = map.getSpatialNavigationHint('red cube', features);
+    expect(hint).toBeNull();
+  });
+
+  test('C19: spatialFeatures stored on nodes and round-tripped via JSON', async () => {
+    const mockInfer = createMockInference();
+    const map = new SemanticMap(mockInfer);
+
+    const spatialFeatures: SpatialFeature[] = [
+      { label: 'stove', bbox: { x: 400, y: 300, w: 200, h: 150 }, center: { x: 500, y: 375 } },
+      { label: 'doorway', bbox: { x: 50, y: 200, w: 100, h: 400 }, center: { x: 100, y: 400 } },
+    ];
+
+    map.loadFromJSON({
+      nodes: [{
+        id: 'loc_0',
+        label: 'kitchen',
+        description: 'Kitchen with stove',
+        features: ['gas stove'],
+        navigationHints: ['doorway'],
+        visitCount: 1,
+        firstVisited: 1000,
+        lastVisited: 1000,
+        spatialFeatures,
+      }],
+      edges: [],
+    });
+
+    // Verify spatial features are on the node
+    const node = map.getNode('loc_0');
+    expect(node).toBeDefined();
+    expect(node!.spatialFeatures).toBeDefined();
+    expect(node!.spatialFeatures!.length).toBe(2);
+    expect(node!.spatialFeatures![0].label).toBe('stove');
+    expect(node!.spatialFeatures![0].center.x).toBe(500);
+
+    // Round-trip via JSON serialization
+    const exported = map.toJSON();
+    expect(exported.nodes[0].spatialFeatures).toBeDefined();
+    expect(exported.nodes[0].spatialFeatures!.length).toBe(2);
+
+    const map2 = new SemanticMap(mockInfer);
+    map2.loadFromJSON(exported);
+    const node2 = map2.getNode('loc_0');
+    expect(node2!.spatialFeatures).toEqual(spatialFeatures);
+  });
+
+  test('C20: nodes without spatialFeatures remain backward compatible', async () => {
+    const mockInfer = createMockInference();
+    const map = new SemanticMap(mockInfer);
+
+    map.loadFromJSON({
+      nodes: [{
+        id: 'loc_0',
+        label: 'hallway',
+        description: 'Hallway',
+        features: ['hardwood floor'],
+        navigationHints: ['door ahead'],
+        visitCount: 1,
+        firstVisited: 1000,
+        lastVisited: 1000,
+        // No spatialFeatures — backward compatible
+      }],
+      edges: [],
+    });
+
+    const node = map.getNode('loc_0');
+    expect(node).toBeDefined();
+    expect(node!.spatialFeatures).toBeUndefined();
+
+    // Round-trip preserves undefined
+    const exported = map.toJSON();
+    const map2 = new SemanticMap(mockInfer);
+    map2.loadFromJSON(exported);
+    expect(map2.getNode('loc_0')!.spatialFeatures).toBeUndefined();
   });
 });
 

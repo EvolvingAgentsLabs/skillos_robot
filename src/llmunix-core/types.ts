@@ -98,6 +98,8 @@ export interface Strategy {
   steps: string[];
   /** Things NOT to do (learned from failures) */
   negativeConstraints: string[];
+  /** Spatial navigation rules learned from bounding box grounding (e.g., "when target bbox center x > 600, TURN_RIGHT proportionally") */
+  spatialRules?: string[];
   /** Confidence score (0-1), updated by dream engine */
   confidence: number;
   /** Number of successful uses */

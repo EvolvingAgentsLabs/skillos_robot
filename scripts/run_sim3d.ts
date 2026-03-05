@@ -18,13 +18,15 @@
  *   npx tsx scripts/run_sim3d.ts --help
  */
 
+import * as dgram from 'dgram';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { logger } from '../src/shared/logger';
-import { BytecodeCompiler, formatHex } from '../src/2_qwen_cerebellum/bytecode_compiler';
+import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from '../src/2_qwen_cerebellum/bytecode_compiler';
 import { UDPTransmitter } from '../src/2_qwen_cerebellum/udp_transmitter';
 import { VisionLoop } from '../src/2_qwen_cerebellum/vision_loop';
 import { CerebellumInference } from '../src/2_qwen_cerebellum/inference';
+import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/2_qwen_cerebellum/gemini_robotics';
 import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_tools';
 import { DreamEngine } from '../src/llmunix-core/dream_engine';
 import { StrategyStore } from '../src/3_llmunix_memory/strategy_store';
@@ -57,6 +59,7 @@ let goal = '';
 let mode: 'go_to' | 'explore' = 'go_to';
 let dreamOnShutdown: boolean | undefined;
 let constraints: string | undefined;
+let useGemini = false;
 
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -76,6 +79,9 @@ for (let i = 0; i < args.length; i++) {
     case '--constraints':
       constraints = args[++i] || '';
       break;
+    case '--gemini':
+      useGemini = true;
+      break;
     case '--help':
       console.log(`Usage: npx tsx scripts/run_sim3d.ts [options]
 
@@ -85,6 +91,7 @@ Options:
   --dream               Run dream consolidation on shutdown (default for go_to)
   --no-dream            Disable dream consolidation on shutdown
   --constraints <text>  Additional constraints for navigation
+  --gemini              Use Gemini Robotics-ER instead of Qwen-VL (requires GOOGLE_API_KEY)
   --help                Show this help message
 
 Examples:
@@ -92,6 +99,7 @@ Examples:
   npx tsx scripts/run_sim3d.ts --explore
   npx tsx scripts/run_sim3d.ts --goal "the red cube" --dream
   npx tsx scripts/run_sim3d.ts --goal "the door" --constraints "stay close to walls"
+  GOOGLE_API_KEY=... npx tsx scripts/run_sim3d.ts --gemini --goal "find the red cube"
 `);
       process.exit(0);
   }
@@ -117,17 +125,39 @@ async function runDreamConsolidation(): Promise<void> {
   const TRACES_DIR = path.join(__dirname, '..', 'src', '3_llmunix_memory', 'traces');
   const STRATEGIES_DIR = path.join(__dirname, '..', 'src', '3_llmunix_memory', 'strategies');
 
-  if (!config.apiKey && !config.localInferenceUrl) {
+  const googleApiKey = process.env.GOOGLE_API_KEY;
+  const dreamProvider = process.env.DREAM_PROVIDER;
+
+  if (!config.apiKey && !config.localInferenceUrl && !googleApiKey) {
     logger.warn('Sim3D', 'No API key for dream — run `npm run dream` manually.');
     return;
   }
 
   logger.info('Sim3D', 'Running dream consolidation...');
   const store = new StrategyStore(STRATEGIES_DIR);
-  const dreamInfer = createDreamInference({
-    apiKey: config.apiKey,
-    ...(config.localInferenceUrl ? { apiBaseUrl: config.localInferenceUrl } : {}),
-  });
+
+  let dreamInfer;
+  if (dreamProvider === 'gemini' || (googleApiKey && !config.apiKey && !config.localInferenceUrl)) {
+    // Use Gemini for dream inference (deep analysis with thinking budget)
+    const geminiDream = new GeminiRoboticsInference({
+      apiKey: googleApiKey!,
+      model: process.env.GEMINI_MODEL || 'gemini-robotics-er-1.5-preview',
+      maxOutputTokens: 2048,
+      temperature: 0.3,
+      timeoutMs: 30000,
+      thinkingBudget: parseInt(process.env.GEMINI_THINKING_BUDGET || '1024', 10),
+      useToolCalling: false,
+    });
+    dreamInfer = geminiDream.createInferenceFunction();
+    logger.info('Sim3D', 'Dream provider: Gemini');
+  } else {
+    dreamInfer = createDreamInference({
+      apiKey: config.apiKey,
+      ...(config.localInferenceUrl ? { apiBaseUrl: config.localInferenceUrl } : {}),
+    });
+    logger.info('Sim3D', 'Dream provider: OpenRouter');
+  }
+
   const engine = new DreamEngine({
     adapter: roClawDreamAdapter,
     infer: dreamInfer,
@@ -160,19 +190,38 @@ async function main(): Promise<void> {
   await transmitter.connect();
   logger.info('Sim3D', `UDP transmitter -> ${config.esp32Host}:${config.esp32Port}`);
 
-  // 3. Inference (OpenRouter or local)
-  const inferenceConfig = config.localInferenceUrl
-    ? { apiKey: config.apiKey || 'local', apiBaseUrl: config.localInferenceUrl, model: config.model }
-    : { apiKey: config.apiKey, model: config.model };
-
-  const inference = new CerebellumInference(inferenceConfig);
-  const infer = inference.createInferenceFunction();
-  logger.info('Sim3D', `Inference: ${config.localInferenceUrl ? 'local' : 'OpenRouter'} (${config.model})`);
+  // 3. Inference (Gemini, OpenRouter, or local)
+  let infer;
+  if (useGemini) {
+    const googleApiKey = process.env.GOOGLE_API_KEY;
+    if (!googleApiKey) {
+      logger.error('Sim3D', 'GOOGLE_API_KEY required for --gemini mode');
+      process.exit(1);
+    }
+    const geminiModel = process.env.GEMINI_MODEL || 'gemini-robotics-er-1.5-preview';
+    const thinkingBudget = parseInt(process.env.GEMINI_THINKING_BUDGET || '0', 10);
+    const gemini = new GeminiRoboticsInference({
+      apiKey: googleApiKey,
+      model: geminiModel,
+      thinkingBudget,
+      useToolCalling: true,
+      tools: ROCLAW_TOOL_DECLARATIONS,
+    });
+    infer = gemini.createInferenceFunction();
+    logger.info('Sim3D', `Inference: Gemini (${geminiModel}, thinking=${thinkingBudget}, tools=on)`);
+  } else {
+    const inferenceConfig = config.localInferenceUrl
+      ? { apiKey: config.apiKey || 'local', apiBaseUrl: config.localInferenceUrl, model: config.model }
+      : { apiKey: config.apiKey, model: config.model };
+    const inference = new CerebellumInference(inferenceConfig);
+    infer = inference.createInferenceFunction();
+    logger.info('Sim3D', `Inference: ${config.localInferenceUrl ? 'local' : 'OpenRouter'} (${config.model})`);
+  }
 
   // 4. Vision loop -> bridge MJPEG stream
   const cameraUrl = `http://${config.cameraHost}:${config.cameraPort}${config.cameraPath}`;
   const visionLoop = new VisionLoop(
-    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize },
+    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: useGemini },
     compiler,
     transmitter,
     infer,
@@ -202,6 +251,61 @@ async function main(): Promise<void> {
   // 5. Build ToolContext and dispatch via handleTool
   const ctx: ToolContext = { compiler, transmitter, visionLoop, infer };
 
+  // 6. Physics-based goal confirmation polling — start BEFORE handleTool
+  //    (handleTool blocks on topo planning; we need to track distance immediately)
+  let goalPollInterval: ReturnType<typeof setInterval> | undefined;
+  let goalPollStopped = false;
+
+  if (mode === 'go_to') {
+    const statusSocket = dgram.createSocket('udp4');
+    const statusFrame = encodeFrame({ opcode: Opcode.GET_STATUS, paramLeft: 0, paramRight: 0 });
+
+    // Permanent message handler — parses every response from the bridge
+    statusSocket.on('message', (msg: Buffer) => {
+      if (goalPollStopped) return;
+      try {
+        const status = JSON.parse(msg.toString());
+        const dist = typeof status.targetDistance === 'number' ? status.targetDistance : null;
+        const name = status.targetName || 'target';
+
+        if (dist !== null) {
+          logger.info('Sim3D', `Target "${name}": ${dist.toFixed(2)}m away`);
+        }
+
+        if (status.goalReached === true && dist !== null) {
+          goalPollStopped = true;
+          if (goalPollInterval) clearInterval(goalPollInterval);
+          logger.info('Sim3D', `GOAL CONFIRMED by physics engine: within ${dist.toFixed(2)}m of "${name}"`);
+          visionLoop.confirmArrival(`Physics: within ${dist.toFixed(2)}m of ${name}`);
+
+          // Send STOP bytecode
+          const stopFrame = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+          transmitter.send(stopFrame).catch(() => {});
+
+          statusSocket.close();
+        }
+      } catch {
+        // Ignore parse errors from non-JSON responses
+      }
+    });
+
+    // Bind first, then start polling
+    statusSocket.bind(0, '0.0.0.0', () => {
+      logger.info('Sim3D', `Goal polling socket bound on port ${statusSocket.address().port}`);
+    });
+
+    goalPollInterval = setInterval(() => {
+      if (goalPollStopped) return;
+      statusSocket.send(statusFrame, config.esp32Port, config.esp32Host, (err) => {
+        if (err) logger.warn('Sim3D', `Goal poll send error: ${err.message}`);
+      });
+    }, 2000);
+
+    // Clean up poll on shutdown
+    process.on('SIGINT', () => { goalPollStopped = true; if (goalPollInterval) clearInterval(goalPollInterval); });
+    process.on('SIGTERM', () => { goalPollStopped = true; if (goalPollInterval) clearInterval(goalPollInterval); });
+  }
+
   logger.info('Sim3D', `Starting full cognitive stack: ${cameraUrl}`);
 
   let result;
@@ -217,7 +321,7 @@ async function main(): Promise<void> {
   logger.info('Sim3D', `handleTool result: ${result.message}`);
   logger.info('Sim3D', 'Cycle: 3D render -> MJPEG -> VLM -> bytecode -> UDP -> bridge -> MuJoCo physics');
 
-  // 6. Graceful shutdown
+  // 7. Graceful shutdown
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
@@ -232,7 +336,7 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  // 7. For go_to + dream: wait for navigation to complete, then dream and exit
+  // 8. For go_to + dream: wait for navigation to complete, then dream and exit
   if (mode === 'go_to' && dreamOnShutdown) {
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {

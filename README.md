@@ -182,8 +182,44 @@ npm run dream:v1 # Original statistical pattern extraction
 
 Strategies are stored as markdown with YAML frontmatter in `src/3_llmunix_memory/strategies/`, organized by hierarchy level. Seed strategies provide useful baselines before any real traces exist.
 
+## Gemini Robotics-ER Integration
+
+RoClaw supports [Gemini Robotics-ER](https://deepmind.google/models/gemini-robotics/) as a drop-in replacement for Qwen-VL, using native structured tool calling instead of hex bytecode text parsing.
+
+```bash
+# Run with Gemini (requires GOOGLE_API_KEY in .env)
+npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
+```
+
+### Integration Status
+
+| Component | Gemini Status | Details |
+|-----------|--------------|---------|
+| **Motor control** (VisionLoop) | Integrated | Structured tool calling (`move_forward`, `turn_left`, `rotate_cw`, `stop`, etc.) |
+| **Scene analysis** (topo map) | Integrated | Auto-detected when `GOOGLE_API_KEY` is set |
+| **Dream consolidation** | Integrated | Thinking budget (1024 tokens) for deep strategy analysis |
+| **Navigation planner** | Backend-agnostic | Works with both Gemini and Qwen via `InferenceFunction` |
+| **Semantic map** | Backend-agnostic | Works with both Gemini and Qwen via `InferenceFunction` |
+| **Physics goal confirmation** | Integrated | Bridge tracks euclidean distance to target, auto-stops on arrival |
+
+### Pending / Needs Testing
+
+| Item | Status | Notes |
+|------|--------|-------|
+| **End-to-end goal reach** | In progress | Robot approaches target but VLM navigation quality needs tuning for final approach |
+| **Spatial grounding** (bounding boxes) | Code ready, untested | `SpatialFeature` interface exists, needs live testing with Gemini |
+| **Premature STOP rejection** | Working | Physics engine correctly rejects false VLM arrivals; VisionLoop restarts via planner step-retry |
+| **Tool calling parameter edge cases** | Needs testing | Gemini sometimes returns fractional speeds; scaling logic exists but needs more coverage |
+| **Hardware integration** | Untested | Gemini inference tested in simulation only; real ESP32 hardware loop untested |
+| **Latency benchmarking** | Not done | Gemini vs Qwen motor-loop latency comparison needed |
+| **Adaptive thinking budget** | Not implemented | Could adjust thinking tokens based on scene complexity |
+
+See [docs/08-Gemini-Robotics-Integration.md](docs/08-Gemini-Robotics-Integration.md) for the full integration report.
+
 ## Recent Improvements
 
+- **Gemini Robotics-ER Backend** — Native structured tool calling for motor control, spatial grounding with bounding boxes, configurable thinking budgets, and automatic fallback to Qwen-VL.
+- **Physics-Based Goal Confirmation** — The mjswan bridge computes euclidean distance from the robot's real-time MuJoCo pose to the target object. When the robot enters the arrival radius, the physics engine confirms arrival independently of the VLM's STOP output — solving the premature/missing STOP problem.
 - **3D Physics Simulation (mjswan)** — Full closed-loop VLM testing in a MuJoCo WASM + Three.js browser simulation. First-person `eyes` camera renders to an offscreen `WebGLRenderTarget`, streamed as MJPEG to the VisionLoop. The bridge translates bytecodes to MuJoCo velocity actuators. No hardware required.
 - **Navigation Strategy Prompt** — VLM system prompt now includes explicit navigation strategy (ROTATE when blocked, TURN toward targets, STOP only on arrival) and richer examples covering all motor commands. Produces diverse commands (FORWARD, ROTATE_CW, TURN_RIGHT, STOP) instead of only FORWARD.
 - **Checksum Repair** — Bytecode compiler auto-repairs frames where the VLM gets the opcode and params right but miscalculates the XOR checksum. Validates frame markers and opcode before repairing.
@@ -230,8 +266,10 @@ npm run sim:3d
 open http://localhost:8000?bridge=ws://localhost:9090
 
 # 4. Run the VLM loop (separate terminal) — dream consolidation runs on shutdown by default
-npx tsx scripts/run_sim3d.ts --goal "navigate to the red cube"
+npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
 ```
+
+The bridge dashboard shows real-time target distance. The `--target` flag sets a custom goal target (default: `red_cube:-0.6:-0.5:0.25`). When the robot enters the arrival radius, the physics engine confirms goal achievement independently of VLM output.
 
 The browser renders the 3D scene with an orbit camera for human viewing, while a second offscreen render pass captures frames from the robot's first-person `eyes` camera (65° FOV, 320x240) mounted on the chassis front. These first-person frames are sent via WebSocket to the bridge, which serves them as an MJPEG stream identical to what a real ESP32-CAM would produce.
 
@@ -243,7 +281,7 @@ The browser renders the 3D scene with an orbit camera for human viewing, while a
 | 4210 | UDP | RoClaw stack → Bridge | 6-byte bytecode frames |
 | 8081 | HTTP MJPEG | Bridge → VisionLoop | First-person camera stream |
 
-The bridge includes a terminal dashboard showing real-time ctrl values, command history, pose, and connection status. Use `--verbose` for line-by-line logs.
+The bridge includes a terminal dashboard showing real-time ctrl values, command history, pose, target distance, and connection status. Use `--verbose` for line-by-line logs. The `GET_STATUS` response includes `targetName`, `targetDistance`, and `goalReached` fields for physics-based arrival confirmation.
 
 ## Quickstart
 

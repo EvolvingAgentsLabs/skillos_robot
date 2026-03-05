@@ -33,6 +33,8 @@ export interface VisionLoopConfig {
   reconnectDelayMs: number;
   /** Number of recent frames to send for temporal context (default: 4) */
   frameHistorySize: number;
+  /** Use tool-calling system prompt instead of hex bytecode prompt (for Gemini with function calling) */
+  useToolCallingPrompt?: boolean;
 }
 
 export interface VisionLoopStats {
@@ -168,6 +170,17 @@ export class VisionLoop extends EventEmitter {
   }
 
   /**
+   * Externally confirm arrival (e.g. from physics-based proximity detection).
+   * Closes any open reactive trace as SUCCESS, emits 'arrival', and stops the loop.
+   */
+  confirmArrival(reason: string): void {
+    logger.info('VisionLoop', `Arrival confirmed: ${reason}`);
+    this.closeReactiveTrace(TraceOutcome.SUCCESS, reason);
+    this.emit('arrival', reason);
+    this.stop();
+  }
+
+  /**
    * Update the current goal.
    */
   setGoal(goal: string): void {
@@ -208,11 +221,17 @@ export class VisionLoop extends EventEmitter {
    * Process a single frame manually (for testing or single-shot mode).
    */
   async processSingleFrame(frameBase64: string, history?: string[]): Promise<Buffer | null> {
-    const systemPrompt = this.compiler.getSystemPrompt(this.currentGoal);
+    const systemPrompt = this.config.useToolCallingPrompt
+      ? this.compiler.getToolCallingSystemPrompt(this.currentGoal)
+      : this.compiler.getSystemPrompt(this.currentGoal);
     const frames = history ?? [frameBase64];
     const userMessage = frames.length > 1
-      ? `This is a video of the last ${frames.length} frames of movement (oldest→newest). The goal is: ${this.currentGoal}. Use the visual differences between frames to gauge your velocity and 3D surroundings. Output the next 6-byte motor command.`
-      : 'What do you see? Output the next motor command.';
+      ? this.config.useToolCallingPrompt
+        ? `This is a video of the last ${frames.length} frames of movement (oldest→newest). The goal is: ${this.currentGoal}. Analyze what you see and call the appropriate motor control function.`
+        : `This is a video of the last ${frames.length} frames of movement (oldest→newest). The goal is: ${this.currentGoal}. Use the visual differences between frames to gauge your velocity and 3D surroundings. Output the next 6-byte motor command.`
+      : this.config.useToolCallingPrompt
+        ? `What do you see? Call the appropriate motor control function for the goal: ${this.currentGoal}`
+        : 'What do you see? Output the next motor command.';
 
     this.startInferenceHeartbeat();
     try {
@@ -489,7 +508,9 @@ export class VisionLoop extends EventEmitter {
     this.startInferenceHeartbeat();
 
     try {
-      let systemPrompt = this.compiler.getSystemPrompt(this.currentGoal);
+      let systemPrompt = this.config.useToolCallingPrompt
+        ? this.compiler.getToolCallingSystemPrompt(this.currentGoal)
+        : this.compiler.getSystemPrompt(this.currentGoal);
       if (this.activeConstraints.length > 0) {
         systemPrompt += '\n\nACTIVE CONSTRAINTS (from learned strategies):\n' +
           this.activeConstraints.map(c => `- ${c}`).join('\n');
@@ -505,8 +526,12 @@ export class VisionLoop extends EventEmitter {
       }
 
       const userMessage = frameCount > 1
-        ? `This is a video of the last ${frameCount} frames of movement (oldest→newest, spanning ${Date.now() - this.frameHistory[0].timestamp}ms). The goal is: ${this.currentGoal}. Use the visual differences between frames to gauge your velocity and 3D surroundings. Output the next 6-byte motor command.`
-        : 'What do you see? Output the next motor command.';
+        ? this.config.useToolCallingPrompt
+          ? `This is a video of the last ${frameCount} frames of movement (oldest→newest, spanning ${Date.now() - this.frameHistory[0].timestamp}ms). The goal is: ${this.currentGoal}. Analyze what you see and call the appropriate motor control function.`
+          : `This is a video of the last ${frameCount} frames of movement (oldest→newest, spanning ${Date.now() - this.frameHistory[0].timestamp}ms). The goal is: ${this.currentGoal}. Use the visual differences between frames to gauge your velocity and 3D surroundings. Output the next 6-byte motor command.`
+        : this.config.useToolCallingPrompt
+          ? `What do you see? Call the appropriate motor control function for the goal: ${this.currentGoal}`
+          : 'What do you see? Output the next motor command.';
 
       const vlmOutput = await this.infer(systemPrompt, userMessage, frameBase64s);
       this.statsData.inferenceCount++;

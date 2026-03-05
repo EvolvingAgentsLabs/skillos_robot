@@ -46,6 +46,13 @@ interface CommandRecord {
   hex: string;
 }
 
+interface GoalTarget {
+  name: string;
+  x: number;
+  y: number;
+  radius: number;
+}
+
 interface BridgeState {
   commandHistory: CommandRecord[];
   commandCount: number;
@@ -55,6 +62,10 @@ interface BridgeState {
   lastCtrl: [number, number];
   /** Latest pose reported by the browser (MuJoCo world coordinates) */
   pose: { x: number; y: number; h: number };
+  /** Euclidean distance to current goal target */
+  targetDistance: number;
+  /** Whether the robot is within the target's arrival radius */
+  goalReached: boolean;
 }
 
 /** WebSocket message: bridge -> browser */
@@ -182,7 +193,23 @@ function createMinimalJpeg(): Buffer {
 // CLI Parsing
 // =============================================================================
 
-function parseArgs(): BridgeConfig {
+const DEFAULT_TARGET: GoalTarget = { name: 'red_cube', x: -0.6, y: -0.5, radius: 0.25 };
+
+function parseTarget(spec: string): GoalTarget {
+  const parts = spec.split(':');
+  if (parts.length !== 4) {
+    console.error(`Invalid --target format: "${spec}". Expected name:x:y:radius`);
+    process.exit(1);
+  }
+  return {
+    name: parts[0],
+    x: parseFloat(parts[1]),
+    y: parseFloat(parts[2]),
+    radius: parseFloat(parts[3]),
+  };
+}
+
+function parseArgs(): { config: BridgeConfig; target: GoalTarget } {
   const args = process.argv.slice(2);
   const config: BridgeConfig = {
     udpPort: 4210,
@@ -191,6 +218,7 @@ function parseArgs(): BridgeConfig {
     fps: 2,
     verbose: false,
   };
+  let target = DEFAULT_TARGET;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -198,6 +226,7 @@ function parseArgs(): BridgeConfig {
       case '--cam-port':  config.camPort = parseInt(args[++i], 10); break;
       case '--ws-port':   config.wsPort = parseInt(args[++i], 10); break;
       case '--fps':       config.fps = parseInt(args[++i], 10); break;
+      case '--target':    target = parseTarget(args[++i]); break;
       case '--verbose':   config.verbose = true; break;
       case '--help': case '-h':
         console.log(`
@@ -210,6 +239,7 @@ Options:
   --cam-port <N>   HTTP port for MJPEG stream to VisionLoop (default: 8081)
   --ws-port <N>    WebSocket port for browser connection (default: 9090)
   --fps <N>        MJPEG stream frame rate (default: 2)
+  --target <spec>  Goal target as name:x:y:radius (default: red_cube:-0.6:-0.5:0.25)
   --verbose        Line-by-line logs instead of dashboard
   --help, -h       Show this help
 `);
@@ -217,7 +247,7 @@ Options:
     }
   }
 
-  return config;
+  return { config, target };
 }
 
 // =============================================================================
@@ -228,6 +258,7 @@ function startWebSocketServer(
   config: BridgeConfig,
   state: BridgeState,
   latestJpeg: { data: Buffer },
+  target: GoalTarget,
 ): WebSocketServer {
   const wss = new WebSocketServer({ port: config.wsPort });
   let browserSocket: WebSocket | null = null;
@@ -249,6 +280,10 @@ function startWebSocketServer(
           state.framesReceived++;
         } else if (msg.type === 'pose') {
           state.pose = { x: msg.x, y: msg.y, h: msg.h };
+          const dx = msg.x - target.x;
+          const dy = msg.y - target.y;
+          state.targetDistance = Math.sqrt(dx * dx + dy * dy);
+          state.goalReached = state.targetDistance < target.radius;
         }
       } catch {
         if (config.verbose) {
@@ -308,6 +343,7 @@ function startUdpServer(
   config: BridgeConfig,
   state: BridgeState,
   wss: WebSocketServer,
+  target: GoalTarget,
 ): dgram.Socket {
   const socket = dgram.createSocket('udp4');
 
@@ -348,6 +384,9 @@ function startUdpServer(
           led: 0,
           cmds: state.commandCount,
           uptime: Date.now() - state.startTime,
+          targetName: target.name,
+          targetDistance: Math.round(state.targetDistance * 100) / 100,
+          goalReached: state.goalReached,
         });
         socket.send(Buffer.from(status), rinfo.port, rinfo.address);
       }, 50);
@@ -441,7 +480,7 @@ function formatUptime(ms: number): string {
   return `${s}s`;
 }
 
-function renderDashboard(state: BridgeState, config: BridgeConfig): void {
+function renderDashboard(state: BridgeState, config: BridgeConfig, target: GoalTarget): void {
   const uptime = Date.now() - state.startTime;
   const last = state.commandHistory[state.commandHistory.length - 1];
   const lastOpName = last ? (OPCODE_NAMES[last.opcode] || '???') : '---';
@@ -453,12 +492,17 @@ function renderDashboard(state: BridgeState, config: BridgeConfig): void {
     ? '\x1B[32mCONNECTED\x1B[0m'
     : '\x1B[31mWAITING\x1B[0m';
 
+  const targetStatus = state.goalReached
+    ? '\x1B[1;32mREACHED\x1B[0m'
+    : `${state.targetDistance.toFixed(2)}m`;
+
   const lines = [
     '\x1B[1;35m===== RoClaw mjswan Bridge (3D Physics) =====\x1B[0m',
     '',
     `  \x1B[1mBrowser:\x1B[0m  ${wsStatus}   Frames: ${state.framesReceived}`,
     `  \x1B[1mCtrl:\x1B[0m     L=${state.lastCtrl[0].toFixed(3)} rad/s   R=${state.lastCtrl[1].toFixed(3)} rad/s`,
     `  \x1B[1mPose:\x1B[0m     x=${state.pose.x.toFixed(3)}  y=${state.pose.y.toFixed(3)}  h=${state.pose.h.toFixed(3)} rad`,
+    `  \x1B[1mTarget:\x1B[0m   ${target.name}  Dist: ${targetStatus}`,
     '',
     `  \x1B[1mCommands:\x1B[0m ${state.commandCount}   \x1B[1mUptime:\x1B[0m ${formatUptime(uptime)}`,
     `  \x1B[1mLast:\x1B[0m    ${lastHex}  \x1B[36m${lastOpName}\x1B[0m`,
@@ -476,7 +520,7 @@ function renderDashboard(state: BridgeState, config: BridgeConfig): void {
 // =============================================================================
 
 async function main(): Promise<void> {
-  const config = parseArgs();
+  const { config, target } = parseArgs();
 
   const latestJpeg = { data: createMinimalJpeg() };
 
@@ -488,11 +532,13 @@ async function main(): Promise<void> {
     framesReceived: 0,
     lastCtrl: [0, 0],
     pose: { x: 0, y: 0, h: 0 },
+    targetDistance: Math.sqrt(target.x * target.x + target.y * target.y),
+    goalReached: false,
   };
 
   // Start servers
-  const wss = startWebSocketServer(config, state, latestJpeg);
-  const udpSocket = startUdpServer(config, state, wss);
+  const wss = startWebSocketServer(config, state, latestJpeg, target);
+  const udpSocket = startUdpServer(config, state, wss, target);
   const camServer = startCameraServer(config, latestJpeg);
 
   // Banner
@@ -527,7 +573,7 @@ async function main(): Promise<void> {
   let dashboardInterval: ReturnType<typeof setInterval> | undefined;
   if (!config.verbose) {
     await new Promise(r => setTimeout(r, 1500));
-    dashboardInterval = setInterval(() => renderDashboard(state, config), 500);
+    dashboardInterval = setInterval(() => renderDashboard(state, config, target), 500);
   }
 
   // Graceful shutdown

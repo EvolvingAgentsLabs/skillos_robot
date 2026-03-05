@@ -15,7 +15,16 @@ import type { ActionEntry, HierarchyLevel } from '../llmunix-core/types';
 function compressBytecodes(actions: ActionEntry[]): string {
   if (actions.length === 0) return '(no bytecodes)';
   if (actions.length <= 5) {
-    return actions.map(a => `${a.actionPayload}: ${a.reasoning.slice(0, 50)}`).join('\n');
+    const lines = actions.map(a => {
+      let line = `${a.actionPayload}: ${a.reasoning.slice(0, 50)}`;
+      // Extract spatial coordinate hints from reasoning for short traces
+      const coordMatch = a.reasoning.match(/x[=:]\s*(\d+)/i);
+      if (coordMatch) {
+        line += ` [spatial: x=${coordMatch[1]}]`;
+      }
+      return line;
+    });
+    return lines.join('\n');
   }
 
   // RLE compress: group consecutive identical opcodes
@@ -60,6 +69,7 @@ Output ONLY valid JSON (no markdown, no explanation):
 const STRATEGY_ABSTRACTION_SYSTEM = `You are abstracting successful robot traces into a reusable strategy.
 
 Given a set of successful trace summaries at a specific hierarchy level, create a general-purpose strategy that captures the common pattern.
+If the traces contain spatial coordinate hints (e.g., "[spatial: x=...]"), extract spatial navigation rules that describe how bounding box positions map to motor actions.
 
 Output ONLY valid JSON (no markdown, no explanation):
 {
@@ -67,7 +77,8 @@ Output ONLY valid JSON (no markdown, no explanation):
   "trigger_goals": ["follow wall", "navigate corridor", "find door"],
   "preconditions": ["camera active", "near wall"],
   "steps": ["Detect wall on one side", "Maintain parallel distance using differential speed", "Turn at wall corners"],
-  "negative_constraints": ["Do not hug wall too closely"]
+  "negative_constraints": ["Do not hug wall too closely"],
+  "spatial_rules": ["when target bbox center x > 600, TURN_RIGHT proportionally", "when target bbox center x < 400, TURN_LEFT proportionally"]
 }`;
 
 const STRATEGY_MERGE_SYSTEM = `You receive an existing robot strategy and new evidence from recent traces. Produce an updated version that incorporates the new evidence.

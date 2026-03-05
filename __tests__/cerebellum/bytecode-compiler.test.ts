@@ -307,6 +307,134 @@ describe('BytecodeCompiler', () => {
   });
 
   // ===========================================================================
+  // Tool call compilation (Gemini structured tool calling)
+  // ===========================================================================
+
+  describe('tool call compilation', () => {
+    test('compiles TOOLCALL:move_forward', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"move_forward","args":{"speed_l":150,"speed_r":150}}');
+      expect(result).not.toBeNull();
+      expect(result![1]).toBe(Opcode.MOVE_FORWARD);
+      expect(result![2]).toBe(150);
+      expect(result![3]).toBe(150);
+    });
+
+    test('compiles TOOLCALL:move_backward', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"move_backward","args":{"speed_l":100,"speed_r":80}}');
+      expect(result).not.toBeNull();
+      expect(result![1]).toBe(Opcode.MOVE_BACKWARD);
+      expect(result![2]).toBe(100);
+      expect(result![3]).toBe(80);
+    });
+
+    test('compiles TOOLCALL:turn_left', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"turn_left","args":{"speed_l":60,"speed_r":120}}');
+      expect(result).not.toBeNull();
+      expect(result![1]).toBe(Opcode.TURN_LEFT);
+      expect(result![2]).toBe(60);
+      expect(result![3]).toBe(120);
+    });
+
+    test('compiles TOOLCALL:turn_right', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"turn_right","args":{"speed_l":120,"speed_r":60}}');
+      expect(result).not.toBeNull();
+      expect(result![1]).toBe(Opcode.TURN_RIGHT);
+      expect(result![2]).toBe(120);
+      expect(result![3]).toBe(60);
+    });
+
+    test('compiles TOOLCALL:rotate_cw with degrees/speed', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"rotate_cw","args":{"degrees":90,"speed":128}}');
+      expect(result).not.toBeNull();
+      expect(result![1]).toBe(Opcode.ROTATE_CW);
+      expect(result![2]).toBe(90);  // degrees → paramLeft
+      expect(result![3]).toBe(128); // speed → paramRight
+    });
+
+    test('compiles TOOLCALL:rotate_ccw', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"rotate_ccw","args":{"degrees":180,"speed":64}}');
+      expect(result).not.toBeNull();
+      expect(result![1]).toBe(Opcode.ROTATE_CCW);
+      expect(result![2]).toBe(180);
+      expect(result![3]).toBe(64);
+    });
+
+    test('compiles TOOLCALL:stop (no args)', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"stop","args":{}}');
+      expect(result).not.toBeNull();
+      expect(result![1]).toBe(Opcode.STOP);
+      expect(result![2]).toBe(0);
+      expect(result![3]).toBe(0);
+    });
+
+    test('returns null for unknown tool name', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"fly_away","args":{}}');
+      expect(result).toBeNull();
+    });
+
+    test('returns null for malformed JSON after TOOLCALL:', () => {
+      const result = compiler.compile('TOOLCALL:not-json');
+      expect(result).toBeNull();
+    });
+
+    test('returns null for text that does not start with TOOLCALL:', () => {
+      const result = compiler.compile('Some text TOOLCALL:{"name":"stop","args":{}}');
+      // Should not match — TOOLCALL: must be at the start
+      // This will fall through to other compilation modes
+      expect(result).toBeNull();
+    });
+
+    test('clamps out-of-range values to 0-255', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"move_forward","args":{"speed_l":300,"speed_r":-10}}');
+      expect(result).not.toBeNull();
+      expect(result![2]).toBe(255); // clamped from 300
+      expect(result![3]).toBe(0);   // clamped from -10
+    });
+
+    test('handles missing args gracefully', () => {
+      const result = compiler.compile('TOOLCALL:{"name":"move_forward","args":{}}');
+      expect(result).not.toBeNull();
+      expect(result![2]).toBe(0);
+      expect(result![3]).toBe(0);
+    });
+
+    test('scales normalized 0-1 float values to 0-255', () => {
+      // Gemini Robotics-ER sometimes outputs normalized motor values
+      const result = compiler.compile('TOOLCALL:{"name":"move_forward","args":{"speed_l":0.5,"speed_r":0.8}}');
+      expect(result).not.toBeNull();
+      expect(result![2]).toBe(128); // 0.5 * 255 = 127.5 → 128
+      expect(result![3]).toBe(204); // 0.8 * 255 = 204
+    });
+
+    test('does not scale integer values even if they are small', () => {
+      // Values like 50, 100 are clearly byte-range integers, not 0-1 normalized
+      const result = compiler.compile('TOOLCALL:{"name":"move_forward","args":{"speed_l":50,"speed_r":100}}');
+      expect(result).not.toBeNull();
+      expect(result![2]).toBe(50);
+      expect(result![3]).toBe(100);
+    });
+
+    test('tracks toolcallHits in stats', () => {
+      compiler.compile('TOOLCALL:{"name":"stop","args":{}}');
+      compiler.compile('TOOLCALL:{"name":"move_forward","args":{"speed_l":100,"speed_r":100}}');
+
+      const stats = compiler.getStats();
+      expect(stats.toolcallHits).toBe(2);
+      expect(stats.framesCompiled).toBe(2);
+    });
+
+    test('toolcall has priority over hex and text modes', () => {
+      // Even if text matches hex pattern after TOOLCALL:, toolcall wins
+      compiler.compile('TOOLCALL:{"name":"stop","args":{}}');
+      const stats = compiler.getStats();
+      expect(stats.toolcallHits).toBe(1);
+      expect(stats.grammarHits).toBe(0);
+      expect(stats.fewshotHits).toBe(0);
+      expect(stats.hostFallbacks).toBe(0);
+    });
+  });
+
+  // ===========================================================================
   // formatHex
   // ===========================================================================
 
