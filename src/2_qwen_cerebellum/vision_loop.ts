@@ -170,6 +170,17 @@ export class VisionLoop extends EventEmitter {
   }
 
   /**
+   * Externally confirm arrival (e.g. from physics-based proximity detection).
+   * Closes any open reactive trace as SUCCESS, emits 'arrival', and stops the loop.
+   */
+  confirmArrival(reason: string): void {
+    logger.info('VisionLoop', `Arrival confirmed: ${reason}`);
+    this.closeReactiveTrace(TraceOutcome.SUCCESS, reason);
+    this.emit('arrival', reason);
+    this.stop();
+  }
+
+  /**
    * Update the current goal.
    */
   setGoal(goal: string): void {

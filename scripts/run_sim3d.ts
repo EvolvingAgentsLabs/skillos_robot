@@ -18,10 +18,11 @@
  *   npx tsx scripts/run_sim3d.ts --help
  */
 
+import * as dgram from 'dgram';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { logger } from '../src/shared/logger';
-import { BytecodeCompiler, formatHex } from '../src/2_qwen_cerebellum/bytecode_compiler';
+import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from '../src/2_qwen_cerebellum/bytecode_compiler';
 import { UDPTransmitter } from '../src/2_qwen_cerebellum/udp_transmitter';
 import { VisionLoop } from '../src/2_qwen_cerebellum/vision_loop';
 import { CerebellumInference } from '../src/2_qwen_cerebellum/inference';
@@ -250,6 +251,61 @@ async function main(): Promise<void> {
   // 5. Build ToolContext and dispatch via handleTool
   const ctx: ToolContext = { compiler, transmitter, visionLoop, infer };
 
+  // 6. Physics-based goal confirmation polling — start BEFORE handleTool
+  //    (handleTool blocks on topo planning; we need to track distance immediately)
+  let goalPollInterval: ReturnType<typeof setInterval> | undefined;
+  let goalPollStopped = false;
+
+  if (mode === 'go_to') {
+    const statusSocket = dgram.createSocket('udp4');
+    const statusFrame = encodeFrame({ opcode: Opcode.GET_STATUS, paramLeft: 0, paramRight: 0 });
+
+    // Permanent message handler — parses every response from the bridge
+    statusSocket.on('message', (msg: Buffer) => {
+      if (goalPollStopped) return;
+      try {
+        const status = JSON.parse(msg.toString());
+        const dist = typeof status.targetDistance === 'number' ? status.targetDistance : null;
+        const name = status.targetName || 'target';
+
+        if (dist !== null) {
+          logger.info('Sim3D', `Target "${name}": ${dist.toFixed(2)}m away`);
+        }
+
+        if (status.goalReached === true && dist !== null) {
+          goalPollStopped = true;
+          if (goalPollInterval) clearInterval(goalPollInterval);
+          logger.info('Sim3D', `GOAL CONFIRMED by physics engine: within ${dist.toFixed(2)}m of "${name}"`);
+          visionLoop.confirmArrival(`Physics: within ${dist.toFixed(2)}m of ${name}`);
+
+          // Send STOP bytecode
+          const stopFrame = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+          transmitter.send(stopFrame).catch(() => {});
+
+          statusSocket.close();
+        }
+      } catch {
+        // Ignore parse errors from non-JSON responses
+      }
+    });
+
+    // Bind first, then start polling
+    statusSocket.bind(0, '0.0.0.0', () => {
+      logger.info('Sim3D', `Goal polling socket bound on port ${statusSocket.address().port}`);
+    });
+
+    goalPollInterval = setInterval(() => {
+      if (goalPollStopped) return;
+      statusSocket.send(statusFrame, config.esp32Port, config.esp32Host, (err) => {
+        if (err) logger.warn('Sim3D', `Goal poll send error: ${err.message}`);
+      });
+    }, 2000);
+
+    // Clean up poll on shutdown
+    process.on('SIGINT', () => { goalPollStopped = true; if (goalPollInterval) clearInterval(goalPollInterval); });
+    process.on('SIGTERM', () => { goalPollStopped = true; if (goalPollInterval) clearInterval(goalPollInterval); });
+  }
+
   logger.info('Sim3D', `Starting full cognitive stack: ${cameraUrl}`);
 
   let result;
@@ -265,7 +321,7 @@ async function main(): Promise<void> {
   logger.info('Sim3D', `handleTool result: ${result.message}`);
   logger.info('Sim3D', 'Cycle: 3D render -> MJPEG -> VLM -> bytecode -> UDP -> bridge -> MuJoCo physics');
 
-  // 6. Graceful shutdown
+  // 7. Graceful shutdown
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
@@ -280,7 +336,7 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  // 7. For go_to + dream: wait for navigation to complete, then dream and exit
+  // 8. For go_to + dream: wait for navigation to complete, then dream and exit
   if (mode === 'go_to' && dreamOnShutdown) {
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
