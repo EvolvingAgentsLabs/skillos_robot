@@ -203,6 +203,161 @@ roots, or enforce the convention with a lint rule.
 
 ---
 
+## Priority 7 — Safety Enforcement in Simulation
+
+### 7.1 Neither simulator enforces safety-config.ts limits
+
+`safety-config.ts` defines `maxMotorPWM: 200`, `maxContinuousMs: 30000`,
+`maxContinuousSteps: 40960`, `emergencyStopCm: 8`, and `hostHeartbeatMs: 2000`.
+Neither `virtual_roclaw.ts` nor `mjswan_bridge.ts` enforces any of these. A
+command with `paramLeft: 255` is accepted and applied at full speed. A motor that
+runs for 60 seconds straight is never stopped.
+
+**Fix:** Wire `clampMotorPWM` and `clampStepperSpeed` from `safety-config.ts`
+into `applyCommand()` of `virtual_roclaw.ts`. Add a cumulative motor runtime
+tracker that emits an emergency-stop after `maxContinuousMs`. Add corresponding
+tests that verify clamped commands and timeout cutoffs.
+
+### 7.2 No host heartbeat timeout simulation
+
+The firmware is designed to emergency-stop if no heartbeat arrives within
+`hostTimeoutMs: 5000`. Neither sim enforces this. This means the stack has never
+been tested against the real firmware's watchdog behavior.
+
+**Fix:** Add a heartbeat watchdog timer to `virtual_roclaw.ts`. If no UDP
+message arrives within the configured timeout, set `motorRunning = false` and
+zero speeds. Write a test that starts motors, waits 6 seconds without sending,
+and asserts the motors auto-stopped.
+
+### 7.3 Missing battery depletion model
+
+`FirmwareSafetyStatus` includes `lastBatteryVoltage` and the safety config
+defines `minBatteryVoltage: 3.0`. Neither sim tracks battery. Over long sim
+sessions, strategies will be learned against infinite-energy conditions.
+
+**Fix:** Add a simple linear voltage drain model to `virtual_roclaw.ts`:
+`voltage -= commandCount * drainPerCommand`. When voltage drops below threshold,
+reject motor commands. Test that long sequences eventually trigger low-battery
+stops.
+
+---
+
+## Priority 8 — Sim-to-Real Gap Risks
+
+### 8.1 ROTATE_CW/CCW uses degrees, not physics
+
+`virtual_roclaw.ts:222` applies `state.heading += frame.paramLeft` — treating
+paramLeft as exact degrees. The mjswan bridge instead converts to counter-
+rotating wheel velocities, producing physically grounded rotation with slip and
+overshoot. Real hardware will produce 70–110° for a commanded 90° rotation.
+
+**Fix:** Replace the instant heading change with differential drive physics in
+virtual_roclaw (match the mjswan approach). Add a test comparing virtual_roclaw
+rotation output against `StepperKinematics.calculateTurnSteps()`.
+
+### 8.2 Motor asymmetry is invisible
+
+Both sims assume left and right motors are perfectly matched. Real 28BYJ-48
+units vary in torque. A MOVE_FORWARD with equal params drifts on hardware but
+tracks perfectly straight in sim.
+
+**Fix:** Add a configurable `motorBias` parameter (e.g., `leftSpeedMultiplier:
+0.95`) to `virtual_roclaw.ts` so tests can validate that the cerebellum's
+reactive loop corrects for drift.
+
+### 8.3 Camera produces pose-independent images
+
+`virtual_roclaw.ts` streams a static JPEG regardless of (x, y, heading). The VLM
+always "sees" the same scene. This means any strategy that depends on visual
+feedback (all navigation) trains against a lie.
+
+**Fix:** For the virtual sim, create a small set of labeled room images and
+select which one to stream based on the robot's current (x, y) zone. Even 4–6
+zone images would make VLM navigation testable without the mjswan browser.
+
+---
+
+## Priority 9 — Failure Mode Injection
+
+### 9.1 No inference failure testing
+
+The mock inference server in `virtual_roclaw.ts` always returns valid hex. Real
+VLM inference can: timeout, return empty, return unparseable text, hit rate
+limits (HTTP 429), or return partial JSON.
+
+**Fix:** Add a `--fault-mode` flag to the mock server with modes:
+- `timeout` — Respond after 10s delay.
+- `empty` — Return `{ choices: [{ message: { content: "" } }] }`.
+- `garbage` — Return non-hex, non-JSON text.
+- `rate-limit` — Return HTTP 429 on every other request.
+- `partial` — Return truncated JSON.
+
+Write tests for each mode validating VisionLoop degrades safely (emits STOP,
+retries, does not crash).
+
+### 9.2 No MJPEG stream interruption testing
+
+The virtual cam server delivers perfect frames forever. Real ESP32-CAM streams
+drop frames, corrupt JPEG data, and disconnect on Wi-Fi issues.
+
+**Fix:** Add a `--cam-fault` flag with modes:
+- `corrupt` — Flip random bytes in JPEG data.
+- `stall` — Stop sending frames after N frames.
+- `disconnect` — Close the HTTP connection mid-stream.
+
+Test that VisionLoop handles each without crashing.
+
+### 9.3 No WebSocket reconnection testing for mjswan bridge
+
+The bridge has no reconnection logic. If the browser tab closes, `browserSocket`
+goes null and ctrl messages are silently dropped. The bridge never recovers.
+
+**Fix:** Add reconnection detection (new `connection` event re-establishes
+`browserSocket`). Test with mock WS client: connect → send commands → disconnect
+→ reconnect → assert commands resume.
+
+---
+
+## Priority 10 — Learning Loop Validation
+
+### 10.1 No end-to-end dream cycle test
+
+The most valuable sim-only test that does not exist: run a complete learning
+loop in memory.
+
+```
+1. Simulate a 5-step navigation session producing traces (mock inference).
+2. Run DreamEngine.consolidate() on those traces.
+3. Assert new strategies appear in the StrategyStore with confidence > 0.
+4. Run Planner.planGoal() with a matching goal.
+5. Assert the planner selects the newly learned strategy.
+6. Simulate a second session using that strategy.
+7. Run dream again.
+8. Assert strategy confidence increased.
+```
+
+This validates the full cortex → cerebellum → traces → dream → strategy →
+cortex loop without any hardware or API keys.
+
+### 10.2 Strategy confidence monotonicity under repeated success
+
+No test verifies that 10 consecutive successful traces for the same goal
+monotonically increase strategy confidence. The current scoring formula (50%
+trigger match + 30% confidence + 20% success rate) should be verified
+empirically with mock data.
+
+### 10.3 Negative constraint propagation
+
+The Dream Engine extracts failure constraints in Phase 1. No test verifies that
+these constraints actually appear in the planner's prompt and change its output.
+
+**Test outline:**
+1. Create traces where "turn left at hallway" always fails.
+2. Run dream — assert `_negative_constraints.md` contains the learned rule.
+3. Run planner for a hallway goal — assert the plan avoids left turns.
+
+---
+
 ## Summary
 
 | Priority | Items | Theme |
@@ -213,6 +368,10 @@ roots, or enforce the convention with a lint rule.
 | **P4** | 4 | Entire components lack test suites |
 | **P5** | 3 | No performance or stress testing |
 | **P6** | 2 | Hardcoded values and config gaps |
+| **P7** | 3 | Safety limits defined but never enforced in sim |
+| **P8** | 3 | Sim-to-real gaps that will break on hardware |
+| **P9** | 3 | No failure injection for graceful degradation testing |
+| **P10** | 3 | Learning loop never validated end-to-end |
 
-All items are simulation-only or test-only — no firmware or hardware changes
-needed.
+**Total: 31 items** across 10 priority tiers. All are simulation-only or
+test-only — no firmware or hardware changes needed.
