@@ -11,6 +11,7 @@
     "type-check": "tsc --noEmit",
     "dream": "tsx scripts/dream.ts",
     "dream:v1": "tsx scripts/dream_v1.ts",
+    "dream:sim": "tsx scripts/dream_sim.ts",
     "sim:3d": "tsx src/mjswan_bridge.ts"
   },
   "keywords": [
