@@ -87,6 +87,16 @@ export function strategyFromMarkdown(content: string, filePath: string): Strateg
       }
     }
 
+    // Parse spatial rules from body
+    const spatialRules: string[] = [];
+    const spatialSection = body.match(/## Spatial Rules([\s\S]*?)(?=\n## |\n$|$)/i);
+    if (spatialSection) {
+      const spatialRegex = /^[-*]\s+(.+)$/gm;
+      while ((match = spatialRegex.exec(spatialSection[1])) !== null) {
+        spatialRules.push(match[1].trim());
+      }
+    }
+
     return {
       id,
       version: parseInt(meta.version || '1', 10),
@@ -101,6 +111,7 @@ export function strategyFromMarkdown(content: string, filePath: string): Strateg
       failureCount: parseInt(meta.failure_count || '0', 10),
       sourceTraceIds: parseStringArray(meta.source_traces),
       deprecated: meta.deprecated === 'true',
+      ...(spatialRules.length > 0 ? { spatialRules } : {}),
     };
   } catch (err) {
     console.warn(`[StrategyStore] Failed to parse strategy: ${filePath}`, err instanceof Error ? err.message : String(err));
@@ -136,6 +147,14 @@ export function strategyToMarkdown(strategy: Strategy): string {
     lines.push('## Negative Constraints', '');
     for (const nc of strategy.negativeConstraints) {
       lines.push(`- ${nc}`);
+    }
+    lines.push('');
+  }
+
+  if (strategy.spatialRules && strategy.spatialRules.length > 0) {
+    lines.push('## Spatial Rules', '');
+    for (const rule of strategy.spatialRules) {
+      lines.push(`- ${rule}`);
     }
     lines.push('');
   }
@@ -307,6 +326,15 @@ export class StrategyStore {
     if (!this.isAvailable()) {
       fs.mkdirSync(this.strategiesDir, { recursive: true });
     }
+
+    // Deduplicate: skip if a constraint with very similar description already exists
+    const existing = this.getNegativeConstraints();
+    const descLower = constraint.description.toLowerCase();
+    const isDuplicate = existing.some(c => {
+      const existingLower = c.description.toLowerCase();
+      return existingLower === descLower || existingLower.includes(descLower) || descLower.includes(existingLower);
+    });
+    if (isDuplicate) return;
 
     const filePath = path.join(this.strategiesDir, CONSTRAINTS_FILE);
     const entry = [

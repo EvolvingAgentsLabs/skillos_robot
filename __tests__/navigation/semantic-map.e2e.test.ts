@@ -15,10 +15,10 @@
 
 import {
   SemanticMap,
-  extractJSON,
   type SceneAnalysis,
   type SemanticNode,
 } from '../../src/3_llmunix_memory/semantic_map';
+import { extractJSON } from '../../src/llmunix-core/utils';
 import { CerebellumInference } from '../../src/2_qwen_cerebellum/inference';
 import type { InferenceFunction } from '../../src/2_qwen_cerebellum/inference';
 import { BytecodeCompiler, Opcode, OPCODE_NAMES } from '../../src/2_qwen_cerebellum/bytecode_compiler';

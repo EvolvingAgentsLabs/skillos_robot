@@ -86,6 +86,7 @@ export class VisionLoop extends EventEmitter {
   // Stuck detection + step timeout
   private recentOpcodes: number[] = [];
   private static readonly STUCK_WINDOW = 8;
+  private static readonly STUCK_ENTROPY_THRESHOLD = 0.5; // Below this = stuck (max entropy for 2 opcodes ≈ 1.0)
   private static readonly STEP_TIMEOUT_MS = 45000;
   private stepStartTime = 0;
 
@@ -95,7 +96,8 @@ export class VisionLoop extends EventEmitter {
   private static readonly REACTIVE_TRACE_WINDOW = 10;
 
   // Heartbeat: keeps ESP32 alive during slow VLM inference (5-30s)
-  private static readonly HEARTBEAT_INTERVAL_MS = 1500; // Under the 2000ms firmware timeout
+  // Must be well under the 2000ms firmware timeout to account for network jitter
+  private static readonly HEARTBEAT_INTERVAL_MS = 1000;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   // MJPEG parsing state
@@ -249,17 +251,13 @@ export class VisionLoop extends EventEmitter {
         this.emit('arrival', vlmOutput);
       }
 
-      // Stuck detection: N consecutive identical opcodes
+      // Stuck detection: low entropy over recent opcode window (catches identical + oscillation)
       if (decoded) {
         this.recentOpcodes.push(decoded.opcode);
         if (this.recentOpcodes.length > VisionLoop.STUCK_WINDOW) {
           this.recentOpcodes.shift();
         }
-        if (
-          this.recentOpcodes.length === VisionLoop.STUCK_WINDOW &&
-          this.recentOpcodes.every(op => op === this.recentOpcodes[0]) &&
-          decoded.opcode !== Opcode.STOP
-        ) {
+        if (decoded.opcode !== Opcode.STOP && this.computeOpcodeEntropy() < VisionLoop.STUCK_ENTROPY_THRESHOLD) {
           this.emit('stuck', vlmOutput);
           this.recentOpcodes = [];
         }
@@ -577,18 +575,14 @@ export class VisionLoop extends EventEmitter {
           appendTrace(this.currentGoal, vlmOutput, bytecode);
         }
 
-        // Stuck detection: N consecutive identical opcodes
+        // Stuck detection: low entropy over recent opcode window (catches identical + oscillation)
         if (decoded) {
           this.recentOpcodes.push(decoded.opcode);
           if (this.recentOpcodes.length > VisionLoop.STUCK_WINDOW) {
             this.recentOpcodes.shift();
           }
-          if (
-            this.recentOpcodes.length === VisionLoop.STUCK_WINDOW &&
-            this.recentOpcodes.every(op => op === this.recentOpcodes[0]) &&
-            decoded.opcode !== Opcode.STOP
-          ) {
-            this.closeReactiveTrace(TraceOutcome.FAILURE, 'Stuck: repeated identical commands');
+          if (decoded.opcode !== Opcode.STOP && this.computeOpcodeEntropy() < VisionLoop.STUCK_ENTROPY_THRESHOLD) {
+            this.closeReactiveTrace(TraceOutcome.FAILURE, 'Stuck: low entropy motor pattern');
             this.emit('stuck', vlmOutput);
             this.recentOpcodes = [];
           }
@@ -608,6 +602,26 @@ export class VisionLoop extends EventEmitter {
       this.stopInferenceHeartbeat();
       this.processingFrame = false;
     }
+  }
+
+  /**
+   * Compute Shannon entropy of the recent opcode window.
+   * Returns 0 for all-identical, higher values for more varied sequences.
+   * Catches both stuck (all same) and oscillation (e.g. LEFT/RIGHT repeating).
+   */
+  private computeOpcodeEntropy(): number {
+    if (this.recentOpcodes.length < VisionLoop.STUCK_WINDOW) return Infinity;
+    const counts = new Map<number, number>();
+    for (const op of this.recentOpcodes) {
+      counts.set(op, (counts.get(op) ?? 0) + 1);
+    }
+    let entropy = 0;
+    const n = this.recentOpcodes.length;
+    for (const count of counts.values()) {
+      const p = count / n;
+      if (p > 0) entropy -= p * Math.log2(p);
+    }
+    return entropy;
   }
 
   private closeReactiveTrace(outcome: TraceOutcome, reason: string): void {

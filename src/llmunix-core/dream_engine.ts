@@ -352,7 +352,9 @@ export class DreamEngine {
       sequences.push({
         traces: currentGroup,
         goal: currentGoal,
-        outcome: hasFailure ? TraceOutcome.FAILURE : TraceOutcome.UNKNOWN,
+        outcome: hasFailure ? TraceOutcome.FAILURE : (
+          currentGroup.some(t => t.outcome === TraceOutcome.SUCCESS) ? TraceOutcome.SUCCESS : TraceOutcome.UNKNOWN
+        ),
         score: 0,
         level: currentGroup[0].level ?? HierarchyLevel.REACTIVE,
         source,
@@ -468,10 +470,12 @@ export class DreamEngine {
       }
     }
 
-    for (const seq of sequences) {
-      if (seq.score < 0.1 && seq.outcome !== TraceOutcome.FAILURE) {
-        prunedCount++;
-      }
+    // Remove low-value sequences from the list so they aren't processed in REM
+    const toPrune = sequences.filter(s => s.score < 0.1 && s.outcome !== TraceOutcome.FAILURE);
+    prunedCount = toPrune.length;
+    for (const seq of toPrune) {
+      const idx = sequences.indexOf(seq);
+      if (idx >= 0) sequences.splice(idx, 1);
     }
 
     console.log(`Pruned ${prunedCount} low-value sequence(s)`);

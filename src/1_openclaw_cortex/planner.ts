@@ -13,6 +13,7 @@ import type { InferenceFunction } from '../2_qwen_cerebellum/inference';
 import { MemoryManager } from '../3_llmunix_memory/memory_manager';
 import { HierarchyLevel, type Strategy, type NegativeConstraint } from '../3_llmunix_memory/trace_types';
 import { TraceSource } from '../llmunix-core/types';
+import { parseJSONSafe } from '../llmunix-core/utils';
 import { traceLogger } from '../3_llmunix_memory/trace_logger';
 
 // =============================================================================
@@ -66,32 +67,6 @@ Output ONLY valid JSON (no markdown, no explanation):
   "constraints": ["slow down near doorway", "check clearance before proceeding"],
   "strategyHint": "Use doorway approach pattern: slow, center, proceed"
 }`;
-
-// =============================================================================
-// JSON Parsing (handles <think> tags from reasoning models)
-// =============================================================================
-
-function extractJSON(text: string): string {
-  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*\n?/gm, '').replace(/\n?```\s*$/gm, '').trim();
-  const start = cleaned.indexOf('{');
-  if (start < 0) return cleaned;
-  let depth = 0;
-  for (let i = start; i < cleaned.length; i++) {
-    if (cleaned[i] === '{') depth++;
-    if (cleaned[i] === '}') depth--;
-    if (depth === 0) return cleaned.slice(start, i + 1);
-  }
-  return cleaned.slice(start);
-}
-
-function parseJSONSafe<T>(text: string): T | null {
-  try {
-    return JSON.parse(extractJSON(text)) as T;
-  } catch {
-    return null;
-  }
-}
 
 // =============================================================================
 // HierarchicalPlanner

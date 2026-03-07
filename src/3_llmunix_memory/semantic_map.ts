@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { InferenceFunction } from '../2_qwen_cerebellum/inference';
+import { extractJSON } from '../llmunix-core/utils';
 import { logger } from '../shared/logger';
 
 // =============================================================================
@@ -170,36 +171,8 @@ Output ONLY valid JSON (no markdown, no explanation):
 }`;
 
 // =============================================================================
-// JSON Parsing (handles <think> tags from reasoning models)
+// JSON Parsing — uses extractJSON from core, adds truncated JSON recovery
 // =============================================================================
-
-export function extractJSON(text: string): string {
-  // Strip <think>...</think> blocks (reasoning models)
-  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-
-  // Strip markdown code fences
-  cleaned = cleaned.replace(/^```(?:json)?\s*\n?/gm, '').replace(/\n?```\s*$/gm, '').trim();
-
-  // Find first { ... } or [ ... ] block
-  const jsonStart = cleaned.indexOf('{');
-  const arrayStart = cleaned.indexOf('[');
-  const start = jsonStart >= 0 && (arrayStart < 0 || jsonStart < arrayStart)
-    ? jsonStart : arrayStart;
-
-  if (start < 0) return cleaned;
-
-  const openChar = cleaned[start];
-  const closeChar = openChar === '{' ? '}' : ']';
-  let depth = 0;
-
-  for (let i = start; i < cleaned.length; i++) {
-    if (cleaned[i] === openChar) depth++;
-    if (cleaned[i] === closeChar) depth--;
-    if (depth === 0) return cleaned.slice(start, i + 1);
-  }
-
-  return cleaned.slice(start);
-}
 
 function parseJSONSafe<T>(text: string): T | null {
   const json = extractJSON(text);

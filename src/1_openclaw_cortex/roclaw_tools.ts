@@ -364,10 +364,10 @@ async function advanceToNextStep(session: NavigationSession, vlmOutput: string):
   let tacticalGoal = nextStep.description;
   let stepConstraints = nextStep.constraints;
   let strategyHint = '';
+  let currentScene = 'Unknown scene';
 
   try {
     const frameBase64 = ctx.visionLoop.getLatestFrameBase64();
-    let currentScene = 'Unknown scene';
     if (frameBase64) {
       try {
         currentScene = await ctx.infer(
@@ -396,22 +396,14 @@ async function advanceToNextStep(session: NavigationSession, vlmOutput: string):
     });
   }
 
-  // Use topo map for navigation if available
+  // Use topo map for navigation if available — reuse currentScene to avoid duplicate VLM call
   let navGoal = tacticalGoal;
   try {
     const sm = ensureTopoMap();
-    if (sm.getAllNodes().length > 0 && nextStep.targetLabel) {
-      const frameBase64 = ctx.visionLoop.getLatestFrameBase64();
-      if (frameBase64) {
-        const sceneDesc = await ctx.infer(
-          'You are a robot with a camera. Briefly describe what you see.',
-          'Describe the current scene.',
-          [frameBase64],
-        );
-        const decision = await sm.planNavigation(sceneDesc, nextStep.targetLabel, strategyHint, stepConstraints);
-        if (decision && decision.confidence > 0.5) {
-          navGoal = `${tacticalGoal} [TopoMap: "${decision.reasoning}"]`;
-        }
+    if (sm.getAllNodes().length > 0 && nextStep.targetLabel && currentScene !== 'Unknown scene') {
+      const decision = await sm.planNavigation(currentScene, nextStep.targetLabel, strategyHint, stepConstraints);
+      if (decision && decision.confidence > 0.5) {
+        navGoal = `${tacticalGoal} [TopoMap: "${decision.reasoning}"]`;
       }
     }
   } catch {
