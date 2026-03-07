@@ -169,18 +169,50 @@ The **Hierarchical Planner** queries the memory system for relevant strategies a
 
 Between active operation, RoClaw "dreams" — consolidating execution traces into reusable strategies using LLM-powered analysis modeled on biological sleep:
 
-1. **Slow Wave Sleep** — Replay traces, extract failure constraints, prune low-confidence sequences
-2. **REM Sleep** — Abstract successful trace patterns into reusable strategies (or merge with existing ones)
+1. **Slow Wave Sleep** — Replay traces, extract failure constraints, actively prune low-value sequences from further processing
+2. **REM Sleep** — Abstract successful trace patterns into reusable strategies (or merge with existing ones), with fidelity-weighted confidence
 3. **Consolidation** — Write strategies to disk, generate a dream journal entry, prune old traces
 
 The dream algorithm itself is domain-agnostic (in `src/llmunix-core/dream_engine.ts`). RoClaw plugs in a `DreamDomainAdapter` (`src/3_llmunix_memory/roclaw_dream_adapter.ts`) that provides bytecode RLE compression and robot-specific LLM prompts.
 
 ```bash
-npm run dream    # LLM-powered 3-phase consolidation (v2)
-npm run dream:v1 # Original statistical pattern extraction
+npm run dream      # LLM-powered 3-phase consolidation (v2)
+npm run dream:v1   # Original statistical pattern extraction
+npm run dream:sim  # Text-based dream simulation (generate synthetic traces)
 ```
 
 Strategies are stored as markdown with YAML frontmatter in `src/3_llmunix_memory/strategies/`, organized by hierarchy level. Seed strategies provide useful baselines before any real traces exist.
+
+### Memory Fidelity Weighting
+
+Not all experiences are equal. A lesson learned from physically bumping into a wall is more reliable than one imagined during a text-based dream simulation. RoClaw implements an **epistemological hierarchy** — each trace is tagged with its source, and the Dreaming Engine weights strategy confidence accordingly:
+
+| Source | Fidelity | Strategy Confidence Scaling |
+|--------|----------|---------------------------|
+| `REAL_WORLD` | 1.0 | Full weight — physical sensor data |
+| `SIM_3D` | 0.8 | MuJoCo physics with rendered frames |
+| `SIM_2D` | 0.5 | Simplified 2D physics |
+| `DREAM_TEXT` | 0.3 | Pure text simulation, no visual grounding |
+
+This means:
+- A strategy created from real-world traces starts at **confidence 0.5**
+- The same strategy from dream simulation starts at **confidence 0.15** (0.5 × 0.3)
+- Strategy reinforcement applies `+0.05 × fidelityWeight` per success
+- Scoring uses `avgConfidence × outcomeWeight × recencyBonus × fidelityWeight / durationPenalty`
+
+The system can dream rapidly with text-based simulations, generating many low-confidence hypotheses. When the robot later encounters similar situations in the real world, successful strategies get fast-tracked to high confidence.
+
+### Dream Simulator
+
+RoClaw can generate synthetic training experiences without any hardware or physics simulation:
+
+```bash
+npm run dream:sim -- --scenario kitchen_exploration --provider gemini
+```
+
+The dream simulator generates text-based scenario traces that feed into the standard Dreaming Engine. These traces carry `DREAM_TEXT` fidelity (0.3), producing low-confidence strategies that serve as hypotheses for the robot to test in higher-fidelity environments.
+
+See [docs/09-Memory-Fidelity-And-Dream-Simulation.md](docs/09-Memory-Fidelity-And-Dream-Simulation.md) for the full design.
 
 ## Gemini Robotics-ER Integration
 
@@ -218,26 +250,41 @@ See [docs/08-Gemini-Robotics-Integration.md](docs/08-Gemini-Robotics-Integration
 
 ## Recent Improvements
 
-- **Gemini Robotics-ER Backend** — Native structured tool calling for motor control, spatial grounding with bounding boxes, configurable thinking budgets, and automatic fallback to Qwen-VL.
-- **Physics-Based Goal Confirmation** — The mjswan bridge computes euclidean distance from the robot's real-time MuJoCo pose to the target object. When the robot enters the arrival radius, the physics engine confirms arrival independently of the VLM's STOP output — solving the premature/missing STOP problem.
-- **3D Physics Simulation (mjswan)** — Full closed-loop VLM testing in a MuJoCo WASM + Three.js browser simulation. First-person `eyes` camera renders to an offscreen `WebGLRenderTarget`, streamed as MJPEG to the VisionLoop. The bridge translates bytecodes to MuJoCo velocity actuators. No hardware required.
-- **Navigation Strategy Prompt** — VLM system prompt now includes explicit navigation strategy (ROTATE when blocked, TURN toward targets, STOP only on arrival) and richer examples covering all motor commands. Produces diverse commands (FORWARD, ROTATE_CW, TURN_RIGHT, STOP) instead of only FORWARD.
-- **Checksum Repair** — Bytecode compiler auto-repairs frames where the VLM gets the opcode and params right but miscalculates the XOR checksum. Validates frame markers and opcode before repairing.
+### Memory & Cognition
+- **Memory Fidelity Weighting** — Epistemological hierarchy for trace sources: real-world (1.0) > 3D sim (0.8) > 2D sim (0.5) > dream text (0.3). Strategy confidence scales by fidelity so real experiences outweigh simulations. See [design doc](docs/09-Memory-Fidelity-And-Dream-Simulation.md).
+- **Dream Simulator** — Text-based scenario runner that generates synthetic traces with `DREAM_TEXT` fidelity, enabling strategy hypothesis generation without hardware.
+- **Entropy-Based Stuck Detection** — Shannon entropy over the recent opcode window catches both identical-command and oscillation patterns (e.g., LEFT/RIGHT/LEFT/RIGHT), replacing the old exact-repeat check.
+- **Active SWS Pruning** — Slow Wave Sleep now actively removes low-value sequences from the pipeline so they never reach REM phase strategy abstraction.
+- **Negative Constraint Deduplication** — Substring-matching deduplication prevents the dream engine from accumulating near-identical failure constraints.
+- **Spatial Rules Round-Trip** — Strategy `spatialRules` now serialize to markdown AND deserialize back, fixing a silent data-loss bug.
+- **Consolidated JSON Parsing** — Single `parseJSONSafe` implementation in core, imported everywhere. The semantic map retains its enhanced truncated-JSON recovery.
 - **LLMunix Core Extraction** — Generic cognitive architecture (`src/llmunix-core/`) decoupled from robotics with zero cross-imports. Provides reusable hierarchical memory, strategy management, trace logging, and a DreamEngine with adapter pattern. RoClaw's `src/3_llmunix_memory/` is now a thin adapter layer.
-- **Stuck Detection & Step Timeouts** — VisionLoop detects repeated identical opcodes (stuck) and step-level timeouts (45s), emitting events that trigger automatic retry with re-planning
-- **Step Retry with Re-Planning** — NavigationSession retries stuck/timed-out steps up to 2x, re-planning via `planStrategicStep()` with fresh scene context before aborting
-- **REACTIVE Trace Generation** — VisionLoop now wraps every 10 bytecodes in a Level 4 REACTIVE trace, giving the Dreaming Engine motor-level data for pattern learning
-- **Composite Strategy Scoring** — `findStrategies()` scores by trigger match quality (50%), confidence (30%), and success rate (20%) instead of keyword filter + confidence sort
-- **Per-Step Strategy Matching** — Planner matches the best strategy for each individual step's description, not the same strategy for all steps
-- **Arrival Feedback Loop** — VisionLoop emits `'arrival'` on STOP opcode, closing the Cortex↔Cerebellum loop: multi-step plans auto-advance, traces close with SUCCESS, and `planStrategicStep()` decomposes each step
-- **Hierarchical Planning** — 4-tier cognitive architecture with strategy-informed goal decomposition
-- **Strategy Store** — Hierarchical memory system with per-level strategies and negative constraints
-- **Dreaming Engine v2** — LLM-powered 3-phase memory consolidation (SWS → REM → Consolidation)
+
+### Inference & Motor Control
+- **Gemini Robotics-ER Backend** — Native structured tool calling for motor control, spatial grounding with bounding boxes, configurable thinking budgets, and automatic fallback to Qwen-VL.
+- **Inference Heartbeat** — GET_STATUS keepalive at 1000ms intervals during slow VLM inference (5-30s) prevents ESP32 firmware timeout (2s), with 1000ms safety margin for network jitter.
+- **Duplicate VLM Elimination** — Scene descriptions are reused across strategic planning and topo map navigation, saving one VLM inference per step advancement.
+- **Navigation Strategy Prompt** — VLM system prompt includes explicit navigation strategy and richer examples covering all motor commands.
+- **Checksum Repair** — Bytecode compiler auto-repairs frames where the VLM gets the opcode and params right but miscalculates the XOR checksum.
+
+### Simulation & Testing
+- **Physics-Based Goal Confirmation** — The mjswan bridge computes euclidean distance from the robot's MuJoCo pose to the target. Physics engine confirms arrival independently of VLM output.
+- **3D Physics Simulation (mjswan)** — Full closed-loop VLM testing in a MuJoCo WASM + Three.js browser simulation. No hardware required.
+- **437 Tests Passing** — 25 test suites, comprehensive coverage from unit through E2E, including fidelity-weighted dream engine tests.
+
+### Architecture & Planning
+- **4-Tier Cognitive Architecture** — Strategy-informed goal decomposition across GOAL → STRATEGY → TACTICAL → REACTIVE
+- **Composite Strategy Scoring** — `findStrategies()` scores by trigger match (50%), confidence (30%), and success rate (20%)
+- **Per-Step Strategy Matching** — Planner matches the best strategy per step, not one strategy for all steps
+- **Step Retry with Re-Planning** — NavigationSession retries stuck/timed-out steps up to 2x with fresh scene context
+- **REACTIVE Trace Generation** — VisionLoop wraps every 10 bytecodes in a Level 4 trace for motor pattern learning
+- **Arrival Feedback Loop** — VisionLoop emits `'arrival'` on STOP opcode, closing the Cortex↔Cerebellum loop
+
+### Infrastructure
 - **Seed Strategies** — Cold-start bootstrap behaviors (obstacle avoidance, wall following, doorway approach, target seek)
-- **Inference Heartbeat** — GET_STATUS keepalive during slow VLM inference prevents ESP32 timeout
-- **Feature Pre-Filter** — Jaccard similarity pre-filter skips obviously-different map nodes, reducing VLM API calls
+- **Feature Pre-Filter** — Jaccard similarity pre-filter reduces VLM API calls by 40-60%
 - **Permissive Compiler** — Text commands with trailing punctuation, commas, or markdown formatting now compile
-- **Frame Timestamps** — Frame history tracks capture time; `flushFrameHistory()` clears stale frames after emergency stop
+- **Frame Timestamps** — Frame history tracks capture time for staleness detection
 - **UDP Diagnostics** — Sequence numbers and dropped-frame counter for reliability monitoring
 - **ESP32 IP Filtering** — Optional `CORTEX_IP` allowlist on firmware rejects unauthorized UDP senders
 

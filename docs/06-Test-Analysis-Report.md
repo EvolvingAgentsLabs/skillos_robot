@@ -1,8 +1,9 @@
 # RoClaw Test Analysis Report
 
-**Date:** March 3, 2026
-**Branch:** integration-mjswan-gemini-robotics
-**Test Results:** 341 passed, 0 failures (without API key); 30 skipped (API-gated)
+**Date:** March 7, 2026 (updated)
+**Branch:** analyze-improvements
+**Test Results:** 437 passed, 0 failures (without API key); 39 skipped (API-gated)
+**Suites:** 25 passed, 2 skipped
 
 ---
 

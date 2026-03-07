@@ -189,12 +189,13 @@ Traces accumulate during operation in `traces/trace_YYYY-MM-DD.md`. The system s
 **Level:** 3
 **Parent:** tr_parent456_def
 **Goal:** navigate through doorway
+**Source:** SIM_3D
 **VLM Reasoning:** Doorway detected ahead, centering...
 **Compiled Bytecode:** `AA 01 3C 3C 3D FF`
 ---
 ```
 
-v2 traces add optional fields that v1 parsers skip — full backward compatibility is maintained.
+v2 traces add optional fields that v1 parsers skip — full backward compatibility is maintained. The `**Source:**` field is only written for non-UNKNOWN sources; legacy traces without this field default to `UNKNOWN_SOURCE` (fidelity 0.6) during dream processing.
 
 ### REACTIVE Traces (Level 4)
 
@@ -231,22 +232,23 @@ The algorithm is modeled on biological sleep phases:
 1. Read all `trace_*.md` files, parse both v1 and v2 formats
 2. Check `_dream_journal.md` for last dream timestamp, filter to new traces only
 3. Group traces into sequences by `parentTraceId` links or goal + time proximity (30s window)
-4. Score each sequence: `confidence × outcomeWeight × recencyBonus / durationPenalty`
-5. For FAILURE sequences: call LLM to extract negative constraints
-6. Prune sequences below confidence threshold
+4. Compute dominant source for each group (highest-fidelity source in the traces)
+5. Score each sequence: `(avgConfidence × outcomeWeight × recencyBonus × fidelityWeight) / durationPenalty`
+6. For FAILURE sequences: call LLM to extract negative constraints (with deduplication)
+7. **Actively prune** low-value sequences (score < 0.1, non-failure) — these are removed from the pipeline and never reach REM phase
 
 **Phase 2 — REM Sleep (Strategy Abstraction):**
-1. Group successful traces by hierarchy level
-2. Summarize each sequence compactly (~200 tokens, with RLE-compressed bytecodes)
+1. Group successful/unknown traces by hierarchy level (pruned sequences already removed)
+2. Summarize each sequence compactly (~200 tokens, with RLE-compressed bytecodes, including source/fidelity info)
 3. Check for existing matching strategies (fuzzy `triggerGoal` overlap)
-4. If match exists: call LLM to merge new evidence into existing strategy
-5. If no match: call LLM to abstract traces into a new strategy
-6. Deprecate strategies with high failure rates
+4. If match exists: call LLM to merge new evidence, boost confidence by `+0.05 × fidelityWeight`
+5. If no match: call LLM to abstract into a new strategy, initial confidence = `0.5 × fidelityWeight`
+6. Deprecate strategies with high failure rates (failureCount > 3 && failures > 2× successes)
 
 **Phase 3 — Consolidation:**
-1. Write new strategies to `strategies/level_N_*/strat_N_<slug>.md`
+1. Write new strategies to `strategies/level_N_*/strat_N_<slug>.md` (including `spatialRules` section)
 2. Reinforce existing strategies confirmed by new traces
-3. Write negative constraints to `_negative_constraints.md`
+3. Write negative constraints to `_negative_constraints.md` (with deduplication check)
 4. Generate and append a dream journal entry to `_dream_journal.md`
 5. Delete processed trace files older than retention period (default 7 days)
 6. Clear memory manager cache
@@ -255,6 +257,7 @@ The algorithm is modeled on biological sleep phases:
 
 ```bash
 npm run dream      # v2: LLM-powered 3-phase consolidation
+npm run dream:sim  # Text-based dream simulator (generates DREAM_TEXT traces)
 npm run dream:v1   # v1: Statistical 3-opcode sliding-window patterns
 ```
 
@@ -309,22 +312,70 @@ The original Dreaming Engine (`scripts/dream_v1.ts`) uses a simpler statistical 
 
 This is preserved for environments where LLM API access is unavailable.
 
+## Memory Fidelity Weighting
+
+Not all experiences are equal. The system implements an **epistemological hierarchy** via `TraceSource` — each trace carries its origin, and the dream engine scales strategy confidence accordingly:
+
+| Source | Fidelity Weight | Use Case |
+|--------|----------------|----------|
+| `REAL_WORLD` | 1.0 | Physical robot with real sensors |
+| `SIM_3D` | 0.8 | MuJoCo physics with rendered frames |
+| `SIM_2D` | 0.5 | Simplified 2D physics |
+| `DREAM_TEXT` | 0.3 | Text-based dream simulation |
+| `UNKNOWN_SOURCE` | 0.6 | Legacy traces without source tagging |
+
+**How it flows through the system:**
+
+1. **Trace creation**: `traceSource` is set on the `ToolContext` (e.g., `SIM_3D` in `run_sim3d.ts`, `REAL_WORLD` by default)
+2. **Planner propagation**: `HierarchicalPlanner` passes `this.traceSource` to every `startTrace()` call
+3. **Trace serialization**: Written as `**Source:** SIM_3D` in the trace markdown
+4. **Dream parsing**: `parseTraceFiles()` reads the `**Source:**` field, defaults to `UNKNOWN_SOURCE` for legacy traces
+5. **Sequence grouping**: `dominantSource()` selects the highest-fidelity source in each trace group
+6. **Scoring**: `score = (avgConfidence × outcomeWeight × recencyBonus × fidelityWeight) / durationPenalty`
+7. **Strategy creation**: Initial confidence = `0.5 × fidelityWeight`; reinforcement boost = `+0.05 × fidelityWeight`
+
+This enables rapid hypothesis generation via dream simulation (many low-confidence strategies) that get validated and fast-tracked through real-world experience.
+
+See [09-Memory-Fidelity-And-Dream-Simulation.md](09-Memory-Fidelity-And-Dream-Simulation.md) for the full design.
+
+## Dream Simulator
+
+The dream simulator (`npm run dream:sim`) generates synthetic traces without hardware or physics:
+
+```bash
+npm run dream:sim -- --scenario kitchen_exploration --provider gemini
+```
+
+Generated traces are tagged as `DREAM_TEXT` (fidelity 0.3) and feed into the standard Dreaming Engine pipeline. The simulator supports dual-mode inference (Claude or Gemini). Strategies from dream simulation start at confidence 0.15 and require ~7 real-world successes to reach 0.50.
+
+See `src/3_llmunix_memory/dream_simulator/` for implementation.
+
 ## Simulation-Driven Evolution
 
-The evolution loop can run entirely in simulation using the mjswan bridge. The 3D physics simulator (MuJoCo WASM + Three.js) provides:
+The evolution loop can run at multiple fidelity levels, from pure text simulation to full physics:
+
+| Level | Command | Source Tag | Fidelity | Speed |
+|-------|---------|-----------|----------|-------|
+| Text dream | `npm run dream:sim` | `DREAM_TEXT` | 0.3 | ~100 traces/min |
+| 3D physics | `scripts/run_sim3d.ts` | `SIM_3D` | 0.8 | Real-time |
+| Real hardware | `npm run dev` | `REAL_WORLD` | 1.0 | Real-time |
+
+The 3D physics simulator (MuJoCo WASM + Three.js) provides:
 
 - **First-person camera frames** from the robot's `eyes` camera (65° FOV, 320x240), rendered to an offscreen `WebGLRenderTarget` and streamed as MJPEG
 - **Physics-accurate motor response** via MuJoCo velocity actuators, translating bytecodes to wheel angular velocities
 - **Pose feedback** for trace logging and semantic map building
 
-This enables rapid iteration on strategies and prompts without hardware wear, battery constraints, or physical setup time. Traces accumulated in simulation feed the Dreaming Engine identically to hardware traces.
+Traces from all levels feed the same Dreaming Engine — the fidelity weights ensure strategies converge on real-world truth regardless of how they were initially discovered.
 
 ## The Evolution Loop
 
 The complete evolution cycle:
 
-1. **Operate** — Execute goals, accumulate hierarchical traces (hardware or simulation)
-2. **Dream** — LLM-powered consolidation: failures → constraints, successes → strategies
-3. **Remember** — Strategies + constraints stored in `strategies/` directory
-4. **Evolve** — Planner queries strategies for next operation, VisionLoop uses constraints
-5. **Repeat** — New traces reflect improved behavior, next dream cycle refines further
+1. **Hypothesize** — Dream simulator generates text-based traces (DREAM_TEXT, confidence 0.15)
+2. **Simulate** — MuJoCo 3D simulation validates hypotheses with physics (SIM_3D, confidence 0.40)
+3. **Operate** — Real hardware confirms strategies with ground truth (REAL_WORLD, confidence 0.50)
+4. **Dream** — LLM-powered consolidation: failures → constraints, successes → strategies
+5. **Remember** — Strategies + constraints stored in `strategies/` directory with fidelity-weighted confidence
+6. **Evolve** — Planner queries strategies for next operation, VisionLoop uses constraints
+7. **Repeat** — Each cycle refines strategies with progressively higher-fidelity evidence

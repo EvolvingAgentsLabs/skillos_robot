@@ -92,10 +92,11 @@ The **arrival event** is the critical feedback mechanism that closes the Cortex�
 
 The Cerebellum also monitors for failure conditions during execution:
 
-- **Stuck detection** — If the VisionLoop produces 8 consecutive identical non-STOP opcodes, it emits a `'stuck'` event. This indicates the robot is repeating the same motor command without making progress (e.g., pushing into a wall).
+- **Entropy-based stuck detection** — The VisionLoop computes Shannon entropy over a sliding window of the last 8 opcodes. When entropy drops below 0.5 (and the opcode is not STOP), it emits a `'stuck'` event. This catches both **identical-command** patterns (e.g., FORWARD×8, entropy=0) and **oscillation** patterns (e.g., LEFT/RIGHT/LEFT/RIGHT, entropy=1.0 but with only 2 unique values the threshold catches pathological cases). The old approach only detected N identical opcodes in a row.
 - **Step timeout** — If no arrival occurs within 45 seconds of starting a step, the VisionLoop emits a `'stepTimeout'` event.
+- **Inference heartbeat** — During VLM inference (5-30s), the VisionLoop sends GET_STATUS heartbeat frames every 1000ms to prevent the ESP32's 2s firmware timeout from triggering emergency stop. The 1000ms margin (vs the previous 500ms at 1500ms intervals) accounts for network jitter.
 
-When either event fires, the Cortex's NavigationSession triggers a **step retry**: the current step trace is closed as PARTIAL, the planner re-plans the step with fresh scene context via `planStrategicStep()`, and the VisionLoop receives a new goal. After 2 failed retries, the entire navigation session is aborted as FAILURE. This produces trace data that the Dreaming Engine uses to learn negative constraints (what didn't work) and refine strategies.
+When stuck or timeout fires, the Cortex's NavigationSession triggers a **step retry**: the current step trace is closed as PARTIAL, the planner re-plans the step with fresh scene context via `planStrategicStep()`, and the VisionLoop receives a new goal. After 2 failed retries, the entire navigation session is aborted as FAILURE. This produces trace data that the Dreaming Engine uses to learn negative constraints (what didn't work) and refine strategies.
 
 Path planning and localization live in the **Semantic Map** — a VLM-powered topological graph that runs as an async sidecar to the Cerebellum. It analyzes camera frames to build a map of locations (nodes) and navigation paths (edges), enabling re-identification of visited places and multi-hop pathfinding. See [LLMunix Evolution](04-LLMunix-Evolution.md) for details.
 
