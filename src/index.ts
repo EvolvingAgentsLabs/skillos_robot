@@ -1,13 +1,14 @@
 /**
- * RoClaw — Main Entry Point
+ * RoClaw — Main Entry Point (Gemini Robotics Edition)
  *
- * Boots the dual-brain system:
+ * Boots the dual-brain system powered 100% by Gemini Robotics:
  * 1. Load configuration from .env
  * 2. Initialize UDP transmitter (→ ESP32-S3 spinal cord)
  * 3. Initialize bytecode compiler (neural compiler)
- * 4. Initialize vision loop (→ ESP32-CAM eyes)
- * 5. Connect to OpenClaw Gateway (cortex)
- * 6. Start listening for tool invocations
+ * 4. Initialize Gemini Robotics inference (vision + motor control)
+ * 5. Initialize vision loop (→ ESP32-CAM eyes)
+ * 6. Connect to OpenClaw Gateway (cortex)
+ * 7. Start listening for tool invocations
  */
 
 import * as dotenv from 'dotenv';
@@ -15,7 +16,7 @@ import { logger } from './shared/logger';
 import { BytecodeCompiler } from './2_qwen_cerebellum/bytecode_compiler';
 import { UDPTransmitter } from './2_qwen_cerebellum/udp_transmitter';
 import { VisionLoop } from './2_qwen_cerebellum/vision_loop';
-import { CerebellumInference } from './2_qwen_cerebellum/inference';
+import { GeminiRoboticsInference } from './2_qwen_cerebellum/gemini_robotics';
 import { CortexNode } from './1_openclaw_cortex/index';
 import type { ToolContext } from './1_openclaw_cortex/roclaw_tools';
 
@@ -40,10 +41,9 @@ const config = {
   // Vision Loop
   frameHistorySize: parseInt(process.env.FRAME_HISTORY_SIZE || '4', 10),
 
-  // Inference
-  apiKey: process.env.OPENROUTER_API_KEY || '',
-  model: process.env.QWEN_MODEL || 'qwen/qwen-2.5-vl-72b-instruct',
-  localInferenceUrl: process.env.LOCAL_INFERENCE_URL,
+  // Gemini Robotics Inference
+  googleApiKey: process.env.GOOGLE_API_KEY || '',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
 };
 
 // =============================================================================
@@ -52,7 +52,7 @@ const config = {
 
 async function main(): Promise<void> {
   logger.info('RoClaw', '=== RoClaw — The Physical Embodiment for OpenClaw ===');
-  logger.info('RoClaw', 'Dual-Brain Architecture: Cortex (OpenClaw) + Cerebellum (Qwen-VL)');
+  logger.info('RoClaw', 'Powered by Gemini Robotics — 100% Google AI');
 
   // 1. Initialize bytecode compiler
   const compiler = new BytecodeCompiler('fewshot');
@@ -73,19 +73,28 @@ async function main(): Promise<void> {
     });
   }
 
-  // 3. Initialize inference
-  const inferenceConfig = config.localInferenceUrl
-    ? { apiKey: config.apiKey || 'local', apiBaseUrl: config.localInferenceUrl, model: config.model }
-    : { apiKey: config.apiKey, model: config.model };
+  // 3. Initialize Gemini Robotics inference
+  if (!config.googleApiKey) {
+    logger.error('RoClaw', 'GOOGLE_API_KEY required for Gemini Robotics inference');
+    process.exit(1);
+  }
 
-  const inference = new CerebellumInference(inferenceConfig);
+  const inference = new GeminiRoboticsInference({
+    apiKey: config.googleApiKey,
+    model: config.geminiModel,
+    maxOutputTokens: 64,
+    temperature: 0.1,
+    timeoutMs: 10000,
+    thinkingBudget: 0,
+    useToolCalling: true,
+  });
   const infer = inference.createInferenceFunction();
-  logger.info('RoClaw', `Inference: ${config.localInferenceUrl ? 'local' : 'OpenRouter'} (${config.model})`);
+  logger.info('RoClaw', `Inference: Gemini Robotics (${config.geminiModel})`);
 
   // 4. Initialize vision loop (rolling video buffer for temporal/3D perception)
   const cameraUrl = `http://${config.cameraHost}:${config.cameraPort}${config.cameraPath}`;
   const visionLoop = new VisionLoop(
-    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize },
+    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: true },
     compiler,
     transmitter,
     infer,

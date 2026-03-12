@@ -22,7 +22,7 @@ import type { InferenceStats } from './inference';
 export interface GeminiInferenceConfig {
   /** Google API key */
   apiKey: string;
-  /** Model identifier (default: gemini-2.0-flash) */
+  /** Model identifier (default: gemini-3-flash-preview) */
   model: string;
   /** Max output tokens (default: 64 — bytecode is tiny) */
   maxOutputTokens: number;
@@ -297,7 +297,7 @@ export class GeminiRoboticsInference {
       },
     };
 
-    // Add thinking config if budget > 0
+    // Only send thinkingConfig when budget > 0 (flash-lite may not support thinking API)
     if (this.config.thinkingBudget > 0) {
       (body.generationConfig as Record<string, unknown>).thinkingConfig = {
         thinkingBudget: this.config.thinkingBudget,

@@ -142,6 +142,11 @@ const PULSE_DURATION_S = 0.5;
 const ROBOT_RADIUS_CM = 10; // Robot collision radius
 const FOV_DEGREES = 65; // Camera field of view
 
+export interface ClearanceResult {
+  distanceCm: number;
+  blockedBy: string | null;
+}
+
 export class TextSceneSimulator {
   private world: DreamWorld;
   private state: DreamRobotState;
@@ -149,6 +154,7 @@ export class TextSceneSimulator {
   private frameCount: number = 0;
   private targetId: string | null;
   private goalThresholdCm: number;
+  private previousTargetDistance: number | null = null;
 
   constructor(scenario: DreamScenario) {
     this.world = scenario.world;
@@ -163,6 +169,7 @@ export class TextSceneSimulator {
     this.kin = new StepperKinematics();
     this.targetId = scenario.targetObjectId ?? null;
     this.goalThresholdCm = scenario.goalThresholdCm;
+    this.previousTargetDistance = this.getTargetDistance();
   }
 
   /** Get current robot state */
@@ -292,7 +299,63 @@ export class TextSceneSimulator {
   }
 
   // ---------------------------------------------------------------------------
-  // Scene Description Engine
+  // Ray-Cast Clearance
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Cast a ray from robot position at the given bearing (degrees, 0=north CW)
+   * at 2cm resolution. Returns distance to first obstacle and what blocked it.
+   */
+  rayCastClearance(bearingDeg: number, maxDist: number = 300): ClearanceResult {
+    const rad = bearingDeg * Math.PI / 180;
+    const stepSize = 2; // cm resolution
+    const sinB = Math.sin(rad);
+    const cosB = Math.cos(rad);
+
+    for (let d = stepSize; d <= maxDist; d += stepSize) {
+      const px = this.state.x + d * sinB;
+      const py = this.state.y + d * cosB;
+
+      // Check walls
+      for (const wall of this.world.walls) {
+        const dist = this.pointToSegmentDistance({ x: px, y: py }, wall.from, wall.to);
+        if (dist < ROBOT_RADIUS_CM) {
+          return { distanceCm: Math.round(d), blockedBy: wall.label || 'wall' };
+        }
+      }
+
+      // Check non-target objects
+      for (const obj of this.world.objects) {
+        if (obj.id === this.targetId) continue;
+        const dx = obj.position.x - px;
+        const dy = obj.position.y - py;
+        const objDist = Math.sqrt(dx * dx + dy * dy);
+        if (objDist < ROBOT_RADIUS_CM + obj.radius) {
+          return { distanceCm: Math.round(d), blockedBy: obj.label };
+        }
+      }
+    }
+
+    return { distanceCm: maxDist, blockedBy: null };
+  }
+
+  /**
+   * Get clearance in 6 directions relative to current heading.
+   */
+  private getSixDirectionClearance(): Record<string, ClearanceResult> {
+    const h = this.state.heading;
+    return {
+      forward: this.rayCastClearance(h),
+      'forward-left': this.rayCastClearance(this.normalizeDeg(h - 30)),
+      left: this.rayCastClearance(this.normalizeDeg(h - 90)),
+      'forward-right': this.rayCastClearance(this.normalizeDeg(h + 30)),
+      right: this.rayCastClearance(this.normalizeDeg(h + 90)),
+      backward: this.rayCastClearance(this.normalizeDeg(h + 180)),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scene Description Engine — Two-Pass Output
   // ---------------------------------------------------------------------------
 
   private describeScene(
@@ -301,42 +364,149 @@ export class TextSceneSimulator {
     targetDist: number | null,
   ): string {
     const parts: string[] = [];
+    const clearance = this.getSixDirectionClearance();
+
+    // =========== PASS 1: SPATIAL ANALYSIS (DECISION DATA — read first) ===========
+    parts.push('=== SPATIAL ANALYSIS ===');
+
+    // Pose
+    parts.push(
+      `POSE: x=${this.state.x.toFixed(1)} y=${this.state.y.toFixed(1)} heading=${this.state.heading.toFixed(1)}deg`
+    );
+
+    // Progress tracking
+    if (this.targetId && targetDist !== null) {
+      const target = this.world.objects.find(o => o.id === this.targetId);
+      if (target) {
+        const bearing = this.getBearing(target.position);
+        const relAngle = this.normalizeDeg(bearing - this.state.heading + 180) - 180;
+
+        let progressStatus: string;
+        if (this.previousTargetDistance !== null) {
+          const delta = targetDist - this.previousTargetDistance;
+          if (delta < -0.5) {
+            progressStatus = `approaching delta=${delta.toFixed(1)}cm`;
+          } else if (delta > 0.5) {
+            progressStatus = `receding delta=+${delta.toFixed(1)}cm`;
+          } else {
+            progressStatus = `stuck delta=${delta.toFixed(1)}cm`;
+          }
+        } else {
+          progressStatus = 'initial';
+        }
+        parts.push(
+          `PROGRESS: ${progressStatus} | target=${Math.round(targetDist)}cm at ${Math.round(relAngle)}deg relative | frame ${this.frameCount}`
+        );
+
+        // Update previous distance for next frame
+        this.previousTargetDistance = targetDist;
+      }
+    }
+
+    // Clearance
+    parts.push('CLEARANCE:');
+    for (const [dir, cl] of Object.entries(clearance)) {
+      const status = cl.blockedBy ? `BLOCKED by ${cl.blockedBy}` : 'clear';
+      parts.push(`  ${dir}: ${cl.distanceCm}cm ${status}`);
+    }
+
+    // Navigation options
+    parts.push('OPTIONS:');
+    const fwd = clearance.forward;
+    const fwdLabel = fwd.blockedBy ? `BLOCKED by ${fwd.blockedBy} at ${fwd.distanceCm}cm` : `clear for ${fwd.distanceCm}cm`;
+    let fwdNote = '';
+    if (this.targetId) {
+      const target = this.world.objects.find(o => o.id === this.targetId);
+      if (target) {
+        const bearing = this.getBearing(target.position);
+        const relAngle = Math.abs(this.normalizeDeg(bearing - this.state.heading + 180) - 180);
+        if (relAngle < 15) fwdNote = ' [TARGET is FORWARD]';
+      }
+    }
+    parts.push(`  - FORWARD: ${fwdLabel}${fwdNote}`);
+
+    const left = clearance.left;
+    parts.push(`  - LEFT: ${left.blockedBy ? `BLOCKED by ${left.blockedBy} at ${left.distanceCm}cm` : `clear for ${left.distanceCm}cm`}`);
+
+    const right = clearance.right;
+    parts.push(`  - RIGHT: ${right.blockedBy ? `BLOCKED by ${right.blockedBy} at ${right.distanceCm}cm` : `clear for ${right.distanceCm}cm`}`);
+
+    // Target recommendation
+    if (this.targetId && targetDist !== null) {
+      const target = this.world.objects.find(o => o.id === this.targetId);
+      if (target) {
+        const bearing = this.getBearing(target.position);
+        const relAngle = this.normalizeDeg(bearing - this.state.heading + 180) - 180;
+        const absAngle = Math.abs(relAngle);
+
+        let recommendation: string;
+        if (targetDist < this.goalThresholdCm) {
+          recommendation = 'stop() — target reached';
+        } else if (absAngle < 10 && !fwd.blockedBy) {
+          recommendation = 'move_forward recommended';
+        } else if (relAngle > 10) {
+          recommendation = 'turn_right or rotate_cw recommended';
+        } else if (relAngle < -10) {
+          recommendation = 'turn_left or rotate_ccw recommended';
+        } else {
+          recommendation = 'move_forward recommended';
+        }
+        parts.push(`  - TARGET: ${relAngle >= 0 ? 'right' : 'left'} ${absAngle}deg, ${Math.round(targetDist)}cm away -> ${recommendation}`);
+      }
+    }
+
+    // =========== PASS 2: SCENE PERCEPTION ===========
+    parts.push('');
+    parts.push('=== SCENE PERCEPTION ===');
 
     // Location context
     if (currentRoom) {
-      parts.push(`Location: ${currentRoom.label}.`);
-      if (currentRoom.description) parts.push(currentRoom.description);
-      if (currentRoom.floor) parts.push(`Floor: ${currentRoom.floor}.`);
+      let locLine = `Location: ${currentRoom.label}.`;
+      if (currentRoom.description) locLine += ` ${currentRoom.description}`;
+      if (currentRoom.floor) locLine += ` Floor: ${currentRoom.floor}.`;
+      parts.push(locLine);
     }
 
-    // Collision warning
+    // Contextual collision — differentiate frontal vs lateral
     if (collision) {
-      parts.push('WARNING: Very close to a wall or obstacle. Risk of collision.');
+      const fwdClear = clearance.forward.distanceCm;
+      if (fwdClear < 15) {
+        parts.push('COLLISION WARNING: Obstacle or wall directly ahead. Do NOT move forward.');
+      } else {
+        parts.push('WALL NEARBY: Close to a wall on the side. Forward path is clear.');
+      }
     }
 
-    // Visible walls and distance estimates
+    // Visible walls (compact)
     const wallDescs = this.describeVisibleWalls();
-    if (wallDescs.length > 0) parts.push(...wallDescs);
+    if (wallDescs.length > 0) {
+      parts.push('Walls: ' + wallDescs.join(' '));
+    }
 
     // Visible objects
     const objectDescs = this.describeVisibleObjects();
-    if (objectDescs.length > 0) parts.push(...objectDescs);
+    if (objectDescs.length > 0) {
+      for (const od of objectDescs) parts.push('Object: ' + od);
+    }
 
     // Visible doorways
     const doorwayDescs = this.describeVisibleDoorways();
-    if (doorwayDescs.length > 0) parts.push(...doorwayDescs);
+    if (doorwayDescs.length > 0) {
+      for (const dd of doorwayDescs) parts.push(dd);
+    }
 
     // Target status
     if (this.targetId) {
       const target = this.world.objects.find(o => o.id === this.targetId);
       if (target && targetDist !== null) {
         const bearing = this.getBearing(target.position);
+        const relAngle = this.normalizeDeg(bearing - this.state.heading + 180) - 180;
         const relativeDir = this.relativeDirection(bearing);
 
         if (this.isInFOV(bearing)) {
           parts.push(
-            `TARGET VISIBLE: ${target.label} (${target.description}) is ${relativeDir}, ` +
-            `approximately ${Math.round(targetDist)}cm away.`
+            `TARGET VISIBLE: ${target.label} is ${Math.round(targetDist)}cm ${relativeDir} ` +
+            `(bearing ${relAngle >= 0 ? '+' : ''}${Math.round(relAngle)}deg relative).`
           );
           if (targetDist < this.goalThresholdCm * 2) {
             parts.push(`Target is very close! Approaching arrival.`);
@@ -344,18 +514,10 @@ export class TextSceneSimulator {
         } else {
           parts.push(
             `Target "${target.label}" is not visible in the current field of view. ` +
-            `It should be ${relativeDir} from your current heading.`
+            `It should be ${relativeDir} from your current heading (${relAngle >= 0 ? '+' : ''}${Math.round(relAngle)}deg relative).`
           );
         }
       }
-    }
-
-    // Path assessment
-    const pathClear = this.isPathClear();
-    if (pathClear) {
-      parts.push('The path ahead appears clear for forward movement.');
-    } else {
-      parts.push('The path ahead is blocked. Consider turning or rotating to find a clear path.');
     }
 
     return parts.join('\n');
@@ -363,32 +525,35 @@ export class TextSceneSimulator {
 
   private describeVisibleWalls(): string[] {
     const descriptions: string[] = [];
-    const headingRad = this.state.heading * Math.PI / 180;
 
     for (const wall of this.world.walls) {
+      // Use closest point on wall segment to robot, not midpoint
+      const closestDist = this.pointToSegmentDistance(
+        { x: this.state.x, y: this.state.y },
+        wall.from, wall.to,
+      );
+      if (closestDist > 300) continue;
+
       const midpoint: Vec2 = {
         x: (wall.from.x + wall.to.x) / 2,
         y: (wall.from.y + wall.to.y) / 2,
       };
-      const dist = this.distanceTo(midpoint);
-      if (dist > 300) continue; // Only describe nearby walls
-
       const bearing = this.getBearing(midpoint);
-      if (!this.isInFOV(bearing, 90)) continue; // Wider FOV for wall awareness
+      if (!this.isInFOV(bearing, 90)) continue;
 
       const relDir = this.relativeDirection(bearing);
       const label = wall.label || 'wall';
-      descriptions.push(`A ${label} is visible ${relDir}, approximately ${Math.round(dist)}cm away.`);
+      descriptions.push(`${label} ${Math.round(closestDist)}cm ${relDir}.`);
     }
 
-    return descriptions.slice(0, 3); // Limit to 3 wall descriptions
+    return descriptions.slice(0, 3);
   }
 
   private describeVisibleObjects(): string[] {
     const descriptions: string[] = [];
 
     for (const obj of this.world.objects) {
-      if (obj.id === this.targetId) continue; // Target described separately
+      if (obj.id === this.targetId) continue;
       const dist = this.distanceTo(obj.position);
       if (dist > 300) continue;
 
@@ -397,8 +562,8 @@ export class TextSceneSimulator {
 
       const relDir = this.relativeDirection(bearing);
       descriptions.push(
-        `${obj.label}${obj.color ? ` (${obj.color})` : ''}: ${obj.description}, ` +
-        `${relDir}, ~${Math.round(dist)}cm away.`
+        `${obj.label}${obj.color ? ` (${obj.color})` : ''} — ${obj.description}, ` +
+        `${Math.round(dist)}cm ${relDir}.`
       );
     }
 
@@ -497,32 +662,6 @@ export class TextSceneSimulator {
     return false;
   }
 
-  private isPathClear(): boolean {
-    // Cast a ray forward and check for obstacles within 50cm
-    const headingRad = this.state.heading * Math.PI / 180;
-    const checkDist = 50;
-    const ahead: Vec2 = {
-      x: this.state.x + checkDist * Math.sin(headingRad),
-      y: this.state.y + checkDist * Math.cos(headingRad),
-    };
-
-    // Check walls
-    for (const wall of this.world.walls) {
-      const dist = this.pointToSegmentDistance(ahead, wall.from, wall.to);
-      if (dist < ROBOT_RADIUS_CM * 2) return false;
-    }
-
-    // Check objects
-    for (const obj of this.world.objects) {
-      const dx = obj.position.x - ahead.x;
-      const dy = obj.position.y - ahead.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < ROBOT_RADIUS_CM + obj.radius) return false;
-    }
-
-    return true;
-  }
-
   private getTargetDistance(): number | null {
     if (!this.targetId) return null;
     const target = this.world.objects.find(o => o.id === this.targetId);
@@ -572,13 +711,13 @@ export const SCENARIOS: DreamScenario[] = [
       ],
       doorways: [],
       objects: [
-        { id: 'red-cube', label: 'Red Cube', position: { x: 0, y: 280 }, radius: 5, description: 'A bright red cube on the floor', color: 'red', isTarget: true },
+        { id: 'red-cube', label: 'Red Cube', position: { x: 0, y: 280 }, radius: 5, description: 'A bright red plastic cube (5cm sides) sitting on the tiled floor', color: 'red', isTarget: true },
       ],
     },
     startPose: { x: 0, y: 20, heading: 0 },
     goal: 'Navigate to the red cube at the end of the corridor',
     targetObjectId: 'red-cube',
-    maxFrames: 40,
+    maxFrames: 150,
     goalThresholdCm: 20,
   },
   {
@@ -605,14 +744,14 @@ export const SCENARIOS: DreamScenario[] = [
         { position: { x: 200, y: 100 }, width: 60, facing: 90, label: 'doorway to side room', leadsTo: 'Side room' },
       ],
       objects: [
-        { id: 'table', label: 'Wooden table', position: { x: 100, y: 100 }, radius: 30, description: 'A large wooden dining table' },
-        { id: 'blue-box', label: 'Blue Box', position: { x: 300, y: 100 }, radius: 5, description: 'A small blue box on the floor', color: 'blue', isTarget: true },
+        { id: 'table', label: 'Wooden table', position: { x: 100, y: 100 }, radius: 30, description: 'A large oak dining table with four chairs', color: 'brown' },
+        { id: 'blue-box', label: 'Blue Box', position: { x: 300, y: 100 }, radius: 5, description: 'A small blue cardboard box (8cm sides) on the carpeted floor', color: 'blue', isTarget: true },
       ],
     },
     startPose: { x: 30, y: 30, heading: 0 },
     goal: 'Explore the room and find the blue box',
     targetObjectId: 'blue-box',
-    maxFrames: 60,
+    maxFrames: 200,
     goalThresholdCm: 25,
   },
   {
@@ -624,23 +763,23 @@ export const SCENARIOS: DreamScenario[] = [
         { id: 'arena', label: 'Open arena', bounds: { minX: 0, minY: 0, maxX: 250, maxY: 250 }, floor: 'concrete', description: 'A large open area with scattered obstacles.' },
       ],
       walls: [
-        { from: { x: 0, y: 0 }, to: { x: 250, y: 0 } },
-        { from: { x: 0, y: 0 }, to: { x: 0, y: 250 } },
-        { from: { x: 250, y: 0 }, to: { x: 250, y: 250 } },
-        { from: { x: 0, y: 250 }, to: { x: 250, y: 250 } },
+        { from: { x: 0, y: 0 }, to: { x: 250, y: 0 }, label: 'south wall' },
+        { from: { x: 0, y: 0 }, to: { x: 0, y: 250 }, label: 'west wall' },
+        { from: { x: 250, y: 0 }, to: { x: 250, y: 250 }, label: 'east wall' },
+        { from: { x: 0, y: 250 }, to: { x: 250, y: 250 }, label: 'north wall' },
       ],
       doorways: [],
       objects: [
-        { id: 'box1', label: 'Cardboard box', position: { x: 125, y: 80 }, radius: 20, description: 'A large cardboard box blocking part of the path' },
-        { id: 'box2', label: 'Plastic crate', position: { x: 80, y: 150 }, radius: 15, description: 'A blue plastic crate' },
-        { id: 'box3', label: 'Stack of books', position: { x: 170, y: 140 }, radius: 12, description: 'A tall stack of books on the floor' },
-        { id: 'green-ball', label: 'Green Ball', position: { x: 125, y: 220 }, radius: 5, description: 'A bright green ball', color: 'green', isTarget: true },
+        { id: 'box1', label: 'Cardboard box', position: { x: 125, y: 80 }, radius: 20, description: 'A large brown cardboard shipping box (40cm wide) blocking part of the path', color: 'brown' },
+        { id: 'box2', label: 'Plastic crate', position: { x: 80, y: 150 }, radius: 15, description: 'A blue plastic storage crate (30cm wide) with a lid', color: 'blue' },
+        { id: 'box3', label: 'Stack of books', position: { x: 170, y: 140 }, radius: 12, description: 'A tall stack of hardcover books (24cm wide) piled on the floor' },
+        { id: 'green-ball', label: 'Green Ball', position: { x: 125, y: 220 }, radius: 5, description: 'A bright green tennis ball on the concrete floor', color: 'green', isTarget: true },
       ],
     },
     startPose: { x: 125, y: 20, heading: 0 },
     goal: 'Navigate around the obstacles to reach the green ball',
     targetObjectId: 'green-ball',
-    maxFrames: 50,
+    maxFrames: 200,
     goalThresholdCm: 20,
   },
   {
@@ -664,13 +803,13 @@ export const SCENARIOS: DreamScenario[] = [
       ],
       doorways: [],
       objects: [
-        { id: 'marker', label: 'Yellow Marker', position: { x: 180, y: 220 }, radius: 5, description: 'A small yellow marker cone', color: 'yellow', isTarget: true },
+        { id: 'marker', label: 'Yellow Marker', position: { x: 180, y: 220 }, radius: 5, description: 'A small yellow rubber traffic cone (10cm tall) on the tiled floor', color: 'yellow', isTarget: true },
       ],
     },
     startPose: { x: 20, y: 20, heading: 0 },
     goal: 'Follow the corridor walls to reach the yellow marker at the end',
     targetObjectId: 'marker',
-    maxFrames: 50,
+    maxFrames: 200,
     goalThresholdCm: 20,
   },
   {
@@ -683,10 +822,10 @@ export const SCENARIOS: DreamScenario[] = [
         { id: 'room-b', label: 'Room B', bounds: { minX: 0, minY: 150, maxX: 150, maxY: 300 }, floor: 'tile', description: 'A kitchen with counters along the walls.' },
       ],
       walls: [
-        { from: { x: 0, y: 0 }, to: { x: 150, y: 0 } },
-        { from: { x: 0, y: 0 }, to: { x: 0, y: 300 } },
-        { from: { x: 150, y: 0 }, to: { x: 150, y: 300 } },
-        { from: { x: 0, y: 300 }, to: { x: 150, y: 300 } },
+        { from: { x: 0, y: 0 }, to: { x: 150, y: 0 }, label: 'south wall' },
+        { from: { x: 0, y: 0 }, to: { x: 0, y: 300 }, label: 'west wall' },
+        { from: { x: 150, y: 0 }, to: { x: 150, y: 300 }, label: 'east wall' },
+        { from: { x: 0, y: 300 }, to: { x: 150, y: 300 }, label: 'north wall' },
         // Dividing wall with doorway gap
         { from: { x: 0, y: 150 }, to: { x: 55, y: 150 }, label: 'dividing wall (left)' },
         { from: { x: 95, y: 150 }, to: { x: 150, y: 150 }, label: 'dividing wall (right)' },
@@ -695,14 +834,14 @@ export const SCENARIOS: DreamScenario[] = [
         { position: { x: 75, y: 150 }, width: 40, facing: 0, label: 'kitchen doorway', leadsTo: 'Kitchen (Room B)' },
       ],
       objects: [
-        { id: 'couch', label: 'Couch', position: { x: 30, y: 70 }, radius: 25, description: 'A large couch against the west wall' },
-        { id: 'orange', label: 'Orange', position: { x: 75, y: 250 }, radius: 4, description: 'An orange on the kitchen counter', color: 'orange', isTarget: true },
+        { id: 'couch', label: 'Couch', position: { x: 30, y: 70 }, radius: 25, description: 'A large grey fabric couch against the west wall' },
+        { id: 'orange', label: 'Orange', position: { x: 75, y: 250 }, radius: 4, description: 'A round orange fruit sitting on the white tile kitchen floor', color: 'orange', isTarget: true },
       ],
     },
     startPose: { x: 100, y: 50, heading: 0 },
     goal: 'Go through the doorway into the kitchen and find the orange',
     targetObjectId: 'orange',
-    maxFrames: 50,
+    maxFrames: 200,
     goalThresholdCm: 25,
   },
 ];

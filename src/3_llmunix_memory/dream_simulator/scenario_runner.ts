@@ -18,7 +18,7 @@ import * as path from 'path';
 import { HierarchyLevel, TraceOutcome, TraceSource } from '../../llmunix-core/types';
 import { BytecodeCompiler, formatHex, encodeFrame, Opcode, OPCODE_NAMES } from '../../2_qwen_cerebellum/bytecode_compiler';
 import { TextSceneSimulator, type DreamScenario, type TextFrame } from './text_scene';
-import { DreamInferenceRouter, type DreamInferenceMode, type DreamInferenceRouterConfig } from './dream_inference_router';
+import { DreamInferenceRouter, type DreamInferenceRouterConfig } from './dream_inference_router';
 
 // =============================================================================
 // Types
@@ -36,7 +36,7 @@ export interface ScenarioResult {
   goalReached: boolean;
   collisionCount: number;
   stuckCount: number;
-  inferenceMode: DreamInferenceMode;
+  inferenceMode: 'gemini';
   durationMs: number;
   /** Per-frame log for trace generation */
   frameLog: FrameLogEntry[];
@@ -54,24 +54,28 @@ export interface FrameLogEntry {
 }
 
 export interface RunnerConfig {
-  /** Inference mode */
-  inferenceMode: DreamInferenceMode;
-  /** OpenRouter API key */
-  openRouterApiKey?: string;
-  /** Google API key */
+  /** Inference mode — always 'gemini' */
+  inferenceMode?: 'gemini';
+  /** Google API key (required) */
   googleApiKey?: string;
   /** Directory to write traces */
   tracesDir: string;
   /** Whether to print live progress */
   verbose: boolean;
-  /** Claude model for dream simulation */
-  claudeModel?: string;
-  /** Gemini model */
+  /** Gemini model for image-based inference (robotics-er) */
   geminiModel?: string;
+  /** Gemini model for text-only inference (flash-lite). Defaults to geminiModel. */
+  textModel?: string;
   /** Number of consecutive identical opcodes to consider "stuck" */
   stuckThreshold?: number;
   /** Max consecutive stuck detections before aborting */
   maxStuckRetries?: number;
+  /** Minimum spatial progress (cm) required to avoid stuck detection */
+  stuckProgressThresholdCm?: number;
+  /** Strategy steps to inject into the system prompt (Full Stack condition) */
+  strategies?: string[];
+  /** Negative constraints to inject into the system prompt (Full Stack condition) */
+  constraints?: string[];
 }
 
 // =============================================================================
@@ -86,20 +90,20 @@ export class DreamScenarioRunner {
   private config: RunnerConfig;
   private stuckThreshold: number;
   private maxStuckRetries: number;
+  private stuckProgressThresholdCm: number;
 
   constructor(config: RunnerConfig) {
     this.config = config;
     this.stuckThreshold = config.stuckThreshold ?? 6;
     this.maxStuckRetries = config.maxStuckRetries ?? 3;
+    this.stuckProgressThresholdCm = config.stuckProgressThresholdCm ?? 2.0;
 
     this.compiler = new BytecodeCompiler('fewshot');
 
     const routerConfig: DreamInferenceRouterConfig = {
-      mode: config.inferenceMode,
-      openRouterApiKey: config.openRouterApiKey,
       googleApiKey: config.googleApiKey,
-      claudeModel: config.claudeModel,
       geminiModel: config.geminiModel,
+      textModel: config.textModel,
       maxTokens: 128,
       temperature: 0.1,
       timeoutMs: 15000,
@@ -117,7 +121,7 @@ export class DreamScenarioRunner {
     if (this.config.verbose) {
       console.log(`\n--- Dream Scenario: ${scenario.title} ---`);
       console.log(`Goal: ${scenario.goal}`);
-      console.log(`Mode: ${this.config.inferenceMode}`);
+      console.log(`Mode: gemini`);
     }
 
     const frameLog: FrameLogEntry[] = [];
@@ -127,12 +131,28 @@ export class DreamScenarioRunner {
     let lastOpcode = -1;
     let goalReached = false;
     let abortReason = '';
+    let stuckCheckPose = { x: sim.getState().x, y: sim.getState().y };
+    const recentOpcodes: number[] = []; // sliding window for oscillation detection
 
     // Get initial frame
     let currentFrame = sim.renderFrame();
 
-    // Build system prompt (tool-calling mode for text scenes)
-    const systemPrompt = this.compiler.getToolCallingSystemPrompt(scenario.goal);
+    // Build system prompt (text-scene mode for dream simulation)
+    let systemPrompt = this.compiler.getTextSceneSystemPrompt(scenario.goal);
+
+    // Inject strategies and constraints (Full Stack condition)
+    if (this.config.strategies && this.config.strategies.length > 0) {
+      systemPrompt += '\n\n## Learned Navigation Strategies\n';
+      for (const step of this.config.strategies) {
+        systemPrompt += `- ${step}\n`;
+      }
+    }
+    if (this.config.constraints && this.config.constraints.length > 0) {
+      systemPrompt += '\n\n## Negative Constraints (NEVER do these)\n';
+      for (const c of this.config.constraints) {
+        systemPrompt += `- ${c}\n`;
+      }
+    }
 
     for (let i = 0; i < scenario.maxFrames; i++) {
       // Build the user message with scene context + frame history
@@ -179,7 +199,7 @@ export class DreamScenarioRunner {
 
       if (currentFrame.collision) collisionCount++;
 
-      // Stuck detection
+      // Stuck detection — progress-aware
       if (opcode === lastOpcode && opcode !== Opcode.STOP) {
         consecutiveIdentical++;
       } else {
@@ -188,13 +208,44 @@ export class DreamScenarioRunner {
       lastOpcode = opcode;
 
       if (consecutiveIdentical >= this.stuckThreshold) {
+        // Check spatial progress before declaring stuck
+        const currentPose = currentFrame.pose;
+        const dx = currentPose.x - stuckCheckPose.x;
+        const dy = currentPose.y - stuckCheckPose.y;
+        const spatialProgress = Math.sqrt(dx * dx + dy * dy);
+
+        if (spatialProgress < this.stuckProgressThresholdCm) {
+          // Truly stuck — no spatial progress
+          stuckCount++;
+          consecutiveIdentical = 0;
+          if (this.config.verbose) {
+            console.log(`  [!] Stuck detected (${stuckCount}/${this.maxStuckRetries}) — progress: ${spatialProgress.toFixed(1)}cm`);
+          }
+          if (stuckCount >= this.maxStuckRetries) {
+            abortReason = `Stuck: ${stuckCount} consecutive stuck detections (${this.stuckThreshold} identical opcodes, <${this.stuckProgressThresholdCm}cm progress)`;
+            break;
+          }
+        } else {
+          // Making spatial progress despite identical opcodes — not stuck
+          consecutiveIdentical = 0;
+          if (this.config.verbose) {
+            console.log(`  [i] Same opcode ${this.stuckThreshold}x but making progress (${spatialProgress.toFixed(1)}cm) — not stuck`);
+          }
+        }
+        stuckCheckPose = { x: currentPose.x, y: currentPose.y };
+      }
+
+      // Oscillation detection — complementary pair pattern (A-B-A-B)
+      recentOpcodes.push(opcode);
+      if (recentOpcodes.length > 4) recentOpcodes.shift();
+      if (recentOpcodes.length === 4 && this.isOscillating(recentOpcodes)) {
         stuckCount++;
-        consecutiveIdentical = 0;
+        recentOpcodes.length = 0; // reset window
         if (this.config.verbose) {
-          console.log(`  [!] Stuck detected (${stuckCount}/${this.maxStuckRetries})`);
+          console.log(`  [!] Oscillation detected (${stuckCount}/${this.maxStuckRetries})`);
         }
         if (stuckCount >= this.maxStuckRetries) {
-          abortReason = `Stuck: ${stuckCount} consecutive stuck detections (${this.stuckThreshold} identical opcodes each)`;
+          abortReason = `Oscillation: ${stuckCount} oscillation detections (alternating complementary opcodes)`;
           break;
         }
       }
@@ -267,7 +318,7 @@ export class DreamScenarioRunner {
       goalReached,
       collisionCount,
       stuckCount,
-      inferenceMode: this.config.inferenceMode,
+      inferenceMode: 'gemini',
       durationMs,
       frameLog,
     };
@@ -302,7 +353,7 @@ export class DreamScenarioRunner {
           goalReached: false,
           collisionCount: 0,
           stuckCount: 0,
-          inferenceMode: this.config.inferenceMode,
+          inferenceMode: 'gemini',
           durationMs: 0,
           frameLog: [],
         });
@@ -324,24 +375,93 @@ export class DreamScenarioRunner {
   private buildUserMessage(currentFrame: TextFrame, history: FrameLogEntry[]): string {
     const parts: string[] = [];
 
-    // Include last 3 frames as "temporal context" (text-based video clip)
-    const recentFrames = history.slice(-3);
+    // Compact action history (last 5 frames: action + distance delta + collision)
+    const recentFrames = history.slice(-5);
     if (recentFrames.length > 0) {
-      parts.push(`PREVIOUS FRAMES (${recentFrames.length} frames, oldest first):`);
-      for (const f of recentFrames) {
-        parts.push(`--- Frame ${f.frameIndex} ---`);
-        parts.push(f.sceneText);
-        parts.push(`Last action: ${f.opcodeName}`);
+      parts.push(`ACTION HISTORY (last ${recentFrames.length} frames):`);
+      for (let i = 0; i < recentFrames.length; i++) {
+        const f = recentFrames[i];
+        const prevDist = i > 0 ? recentFrames[i - 1].targetDistance : (history.length > recentFrames.length ? history[history.length - recentFrames.length - 1].targetDistance : null);
+        let delta = '';
+        if (f.targetDistance !== null && prevDist !== null) {
+          const d = f.targetDistance - prevDist;
+          delta = ` delta=${d >= 0 ? '+' : ''}${d.toFixed(1)}cm`;
+        }
+        const coll = f.collision ? ' COLLISION' : '';
+        parts.push(`  F${f.frameIndex}: ${f.opcodeName} dist=${f.targetDistance?.toFixed(0) ?? '?'}cm${delta}${coll}`);
       }
+
+      // Stuck warning: last 3 actions identical
+      if (recentFrames.length >= 3) {
+        const last3 = recentFrames.slice(-3);
+        if (last3.every(f => f.opcodeName === last3[0].opcodeName)) {
+          parts.push(`  ** STUCK WARNING: same action "${last3[0].opcodeName}" repeated 3x. CHANGE STRATEGY. **`);
+        }
+      }
+
+      // Oscillation warning: A-B-A-B alternating pattern in last 4 actions
+      if (recentFrames.length >= 4) {
+        const last4 = recentFrames.slice(-4);
+        if (
+          last4[0].opcodeName === last4[2].opcodeName &&
+          last4[1].opcodeName === last4[3].opcodeName &&
+          last4[0].opcodeName !== last4[1].opcodeName
+        ) {
+          parts.push(`  ** OSCILLATION WARNING: alternating "${last4[0].opcodeName}" / "${last4[1].opcodeName}". Net zero progress. CHANGE STRATEGY. **`);
+        }
+      }
+
+      // Progress summary
+      if (recentFrames.length >= 2) {
+        const firstDist = recentFrames[0].targetDistance;
+        const lastDist = recentFrames[recentFrames.length - 1].targetDistance;
+        if (firstDist !== null && lastDist !== null) {
+          const totalDelta = lastDist - firstDist;
+          if (totalDelta < -2) {
+            parts.push(`  Progress: Good, ${Math.abs(totalDelta).toFixed(0)}cm closer over last ${recentFrames.length} frames.`);
+          } else if (totalDelta > 2) {
+            parts.push(`  Progress: MOVING AWAY. ${totalDelta.toFixed(0)}cm farther. CHANGE STRATEGY.`);
+          } else {
+            parts.push(`  Progress: NOT making progress. CHANGE STRATEGY.`);
+          }
+        }
+      }
+
       parts.push('');
     }
 
+    // Current frame: full two-pass scene text
     parts.push(`CURRENT FRAME (frame ${currentFrame.frameIndex}):`);
     parts.push(currentFrame.sceneText);
     parts.push('');
-    parts.push('What is your next motor command? Output exactly one TOOLCALL.');
+    parts.push('What is your next motor command? Call exactly one tool function.');
 
     return parts.join('\n');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Oscillation detection helpers
+  // ---------------------------------------------------------------------------
+
+  /** Check if a 4-opcode window shows A-B-A-B oscillation pattern */
+  private isOscillating(opcodes: number[]): boolean {
+    if (opcodes.length < 4) return false;
+    return (
+      opcodes[0] === opcodes[2] &&
+      opcodes[1] === opcodes[3] &&
+      opcodes[0] !== opcodes[1] &&
+      this.isComplementaryPair(opcodes[0], opcodes[1])
+    );
+  }
+
+  /** Check if two opcodes are complementary (would cancel each other out) */
+  private isComplementaryPair(a: number, b: number): boolean {
+    const pairs: [number, number][] = [
+      [Opcode.ROTATE_CW, Opcode.ROTATE_CCW],
+      [Opcode.MOVE_FORWARD, Opcode.MOVE_BACKWARD],
+      [Opcode.TURN_LEFT, Opcode.TURN_RIGHT],
+    ];
+    return pairs.some(([p, q]) => (a === p && b === q) || (a === q && b === p));
   }
 
   // ---------------------------------------------------------------------------

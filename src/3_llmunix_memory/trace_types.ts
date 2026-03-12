@@ -9,6 +9,7 @@
 export {
   HierarchyLevel,
   TraceOutcome,
+  TraceSource,
   type ActionEntry,
   type Strategy,
   type NegativeConstraint,

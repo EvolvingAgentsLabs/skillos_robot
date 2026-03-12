@@ -13,8 +13,8 @@ import { logger } from '../shared/logger';
 import { BytecodeCompiler, Opcode, encodeFrame, decodeFrame, formatHex } from './bytecode_compiler';
 import { UDPTransmitter } from './udp_transmitter';
 import { appendTrace, traceLogger } from '../3_llmunix_memory/trace_logger';
-import { HierarchyLevel, TraceOutcome } from '../3_llmunix_memory/trace_types';
-import type { InferenceFunction } from './inference';
+import { HierarchyLevel, TraceOutcome, TraceSource } from '../3_llmunix_memory/trace_types';
+import type { InferenceFunction } from '../llmunix-core/interfaces';
 
 // =============================================================================
 // Types
@@ -128,6 +128,13 @@ export class VisionLoop extends EventEmitter {
     this.transmitter = transmitter;
     this.infer = infer;
     this.minFrameIntervalMs = 1000 / (this.config.targetFPS || 2);
+
+    // Prompt-mode alignment validation (Constraint 10):
+    // When useToolCallingPrompt is set, the inference backend MUST support tool calling.
+    // We can't inspect the opaque InferenceFunction, but we log a clear reminder.
+    if (this.config.useToolCallingPrompt) {
+      logger.info('VisionLoop', 'Tool-calling prompt mode enabled — ensure inference backend has useToolCalling: true');
+    }
   }
 
   /**
@@ -560,7 +567,7 @@ export class VisionLoop extends EventEmitter {
             this.reactiveTraceId = traceLogger.startTrace(
               HierarchyLevel.REACTIVE,
               `Motor sequence: ${this.currentGoal}`,
-              { parentTraceId: this.activeTraceId },
+              { parentTraceId: this.activeTraceId, source: TraceSource.REAL_WORLD },
             );
             this.reactiveBytecodesCount = 0;
           }

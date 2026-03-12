@@ -4,7 +4,7 @@
  * Barrel export for the dream simulation subsystem:
  *
  * - TextSceneSimulator: Text-only environment engine (no 3D needed)
- * - DreamInferenceRouter: Claude-simulated or real Gemini inference
+ * - DreamInferenceRouter: Gemini Robotics inference for dream scenarios
  * - DreamScenarioRunner: Runs scenarios, produces traces for DreamEngine
  * - SCENARIOS: Prebuilt dream scenarios
  */
@@ -26,7 +26,6 @@ export { DreamInferenceRouter } from './dream_inference_router';
 export type {
   DreamInferenceMode,
   DreamInferenceRouterConfig,
-  DualInferenceResult,
   InferenceStats,
 } from './dream_inference_router';
 

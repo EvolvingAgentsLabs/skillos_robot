@@ -227,9 +227,10 @@ describe('Scene description quality', () => {
     const sim = new TextSceneSimulator(scenario);
     const frame = sim.renderFrame();
 
-    const hasPathInfo = frame.sceneText.includes('path ahead') ||
-                        frame.sceneText.includes('clear') ||
-                        frame.sceneText.includes('blocked');
+    const lowerScene = frame.sceneText.toLowerCase();
+    const hasPathInfo = lowerScene.includes('clearance') ||
+                        lowerScene.includes('clear') ||
+                        lowerScene.includes('blocked');
     expect(hasPathInfo).toBe(true);
   });
 });

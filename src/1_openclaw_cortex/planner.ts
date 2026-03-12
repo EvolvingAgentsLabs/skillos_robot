@@ -9,7 +9,7 @@
  */
 
 import { logger } from '../shared/logger';
-import type { InferenceFunction } from '../2_qwen_cerebellum/inference';
+import type { InferenceFunction } from '../llmunix-core/interfaces';
 import { MemoryManager } from '../3_llmunix_memory/memory_manager';
 import { HierarchyLevel, type Strategy, type NegativeConstraint } from '../3_llmunix_memory/trace_types';
 import { TraceSource } from '../llmunix-core/types';

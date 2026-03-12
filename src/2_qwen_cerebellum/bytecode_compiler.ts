@@ -312,6 +312,15 @@ export class BytecodeCompiler {
     return TOOL_CALLING_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
   }
 
+  /**
+   * Get the system prompt for text-scene simulation (no video/images).
+   * Describes the two-pass scene format and includes chain-of-thought,
+   * few-shot examples, and explicit decision rules.
+   */
+  getTextSceneSystemPrompt(goal: string): string {
+    return TEXT_SCENE_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
+  }
+
   getStats(): CompilerStats {
     return { ...this.stats };
   }
@@ -544,3 +553,42 @@ CRITICAL: Analyze each frame carefully. If the target is visible, navigate towar
 export const BYTECODE_GBNF_GRAMMAR = `root ::= hex-byte " " hex-byte " " hex-byte " " hex-byte " " hex-byte " " hex-byte
 hex-byte ::= hex-digit hex-digit
 hex-digit ::= [0-9A-Fa-f]`;
+
+// =============================================================================
+// Text-Scene System Prompt (for text-based dream simulation — no video/images)
+// =============================================================================
+
+const TEXT_SCENE_SYSTEM_PROMPT = `You are a robot motor controller. GOAL: {{GOAL}}
+
+CRITICAL RULES (read first):
+1. NEVER repeat the same action 3x when PROGRESS shows "stuck" or "receding" — CHANGE action.
+2. NEVER call stop() unless target distance < 20cm.
+3. NEVER move_forward when forward clearance < 15cm — rotate instead.
+4. NEVER alternate CW/CCW rotations — if you rotated CW last frame, do NOT rotate CCW next.
+5. When COLLISION WARNING appears, move_backward then rotate. When WALL NEARBY appears, forward is safe.
+
+INPUT: Two sections per frame — SPATIAL ANALYSIS (numbers) then SCENE PERCEPTION (description).
+Read SPATIAL ANALYSIS first: PROGRESS, CLEARANCE, OPTIONS tell you exactly what to do.
+
+ACTIONS (call exactly ONE per response):
+- move_forward(speed_l, speed_r) — Speed 0-255. Equal = straight.
+- move_backward(speed_l, speed_r)
+- turn_left(speed_l, speed_r) — speed_l < speed_r
+- turn_right(speed_l, speed_r) — speed_l > speed_r
+- rotate_cw(degrees, speed) — Clockwise 0-180deg
+- rotate_ccw(degrees, speed) — Counter-clockwise 0-180deg
+- stop() — ONLY when target < 20cm
+
+DECISION RULES:
+- PROGRESS "approaching" + target within 15deg -> move_forward (speed 180-220)
+- PROGRESS "receding" or "stuck" -> CHANGE action immediately
+- Target bearing > +15deg -> rotate_cw or turn_right to face it
+- Target bearing < -15deg -> rotate_ccw or turn_left to face it
+- Forward BLOCKED + target ahead -> rotate to go around obstacle
+- Clearance > 100cm -> speed 180-220 | 50-100cm -> 120-180 | 20-50cm -> 80-120
+
+EXAMPLES:
+1. forward: 200cm clear, approaching, target +3deg -> move_forward(200,200)
+2. forward: 150cm clear, stuck, target +45deg -> rotate_cw(40,100)
+3. forward: 30cm BLOCKED, target +5deg 120cm -> rotate_cw(60,100)
+4. forward: 25cm clear, approaching, target -2deg 22cm -> move_forward(80,80)`;

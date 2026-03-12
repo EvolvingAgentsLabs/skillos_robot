@@ -3,14 +3,13 @@
  *
  * Runs the robot through dream scenarios using text-only scene simulation,
  * then feeds the generated traces into the DreamEngine for strategy consolidation.
+ * Powered 100% by Gemini Robotics.
  *
  * Usage:
- *   npm run dream:sim                          # Claude mode (default)
- *   npm run dream:sim -- --mode gemini         # Real Gemini
- *   npm run dream:sim -- --mode dual           # Both (compare)
+ *   npm run dream:sim                               # Run all scenarios
  *   npm run dream:sim -- --scenario corridor-target  # Single scenario
- *   npm run dream:sim -- --no-consolidate      # Skip dream consolidation
- *   npm run dream:sim -- --verbose             # Detailed per-frame output
+ *   npm run dream:sim -- --no-consolidate            # Skip dream consolidation
+ *   npm run dream:sim -- --verbose                   # Detailed per-frame output
  */
 
 import * as path from 'path';
@@ -20,7 +19,6 @@ import {
   DreamScenarioRunner,
   generateDreamReport,
   SCENARIOS,
-  type DreamInferenceMode,
 } from '../src/3_llmunix_memory/dream_simulator';
 
 import { DreamEngine } from '../src/llmunix-core/dream_engine';
@@ -35,7 +33,6 @@ dotenv.config();
 // =============================================================================
 
 interface CLIConfig {
-  mode: DreamInferenceMode;
   scenarioId: string | null;
   consolidate: boolean;
   verbose: boolean;
@@ -44,7 +41,6 @@ interface CLIConfig {
 function parseArgs(): CLIConfig {
   const args = process.argv.slice(2);
   const config: CLIConfig = {
-    mode: 'claude',
     scenarioId: null,
     consolidate: true,
     verbose: false,
@@ -52,13 +48,6 @@ function parseArgs(): CLIConfig {
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
-      case '--mode':
-        config.mode = args[++i] as DreamInferenceMode;
-        if (!['claude', 'gemini', 'dual'].includes(config.mode)) {
-          console.error(`Invalid mode: ${config.mode}. Use: claude, gemini, dual`);
-          process.exit(1);
-        }
-        break;
       case '--scenario':
         config.scenarioId = args[++i];
         break;
@@ -71,16 +60,11 @@ function parseArgs(): CLIConfig {
       case '--help':
       case '-h':
         console.log(`
-RoClaw Dream Simulator — Text-based dream simulation
+RoClaw Dream Simulator — Powered by Gemini Robotics
 
 Usage: npm run dream:sim -- [options]
 
 Options:
-  --mode <claude|gemini|dual>  Inference mode (default: claude)
-    claude  - Uses Claude via OpenRouter to simulate Gemini's motor decisions
-    gemini  - Uses real Gemini Robotics API
-    dual    - Runs both and compares agreement
-
   --scenario <id>              Run a single scenario (default: all)
     Available: ${SCENARIOS.map(s => s.id).join(', ')}
 
@@ -89,10 +73,8 @@ Options:
   --help, -h                   Show this help
 
 Environment:
-  OPENROUTER_API_KEY   Required for claude/dual modes
-  GOOGLE_API_KEY       Required for gemini/dual modes
-  DREAM_CLAUDE_MODEL   Claude model override (default: anthropic/claude-sonnet-4)
-  GEMINI_MODEL         Gemini model override (default: gemini-2.0-flash)
+  GOOGLE_API_KEY       Required — Gemini Robotics API key
+  GEMINI_MODEL         Model override (default: gemini-3-flash-preview)
 `);
         process.exit(0);
     }
@@ -110,9 +92,15 @@ const STRATEGIES_DIR = path.join(__dirname, '..', 'src', '3_llmunix_memory', 'st
 
 async function main(): Promise<void> {
   const config = parseArgs();
+  const googleApiKey = process.env.GOOGLE_API_KEY || '';
 
-  console.log('=== RoClaw Dream Simulator ===\n');
-  console.log(`Mode: ${config.mode}`);
+  if (!googleApiKey) {
+    console.error('Error: GOOGLE_API_KEY is required for Gemini Robotics inference.');
+    console.error('Set it in your .env file or export GOOGLE_API_KEY=<your-key>');
+    process.exit(1);
+  }
+
+  console.log('=== RoClaw Dream Simulator (Gemini Robotics) ===\n');
   console.log(`Consolidation: ${config.consolidate ? 'enabled' : 'disabled'}`);
 
   // Select scenarios
@@ -128,14 +116,12 @@ async function main(): Promise<void> {
 
   console.log(`Scenarios: ${scenarios.map(s => s.title).join(', ')}\n`);
 
-  // Create runner
+  // Create runner — Gemini only
   const runner = new DreamScenarioRunner({
-    inferenceMode: config.mode,
-    openRouterApiKey: process.env.OPENROUTER_API_KEY,
-    googleApiKey: process.env.GOOGLE_API_KEY,
+    inferenceMode: 'gemini',
+    googleApiKey,
     tracesDir: TRACES_DIR,
     verbose: config.verbose,
-    claudeModel: process.env.DREAM_CLAUDE_MODEL,
     geminiModel: process.env.GEMINI_MODEL,
   });
 
@@ -148,13 +134,9 @@ async function main(): Promise<void> {
 
   // Print inference stats
   const inferStats = runner.getInferenceStats();
-  console.log('--- Inference Stats ---');
+  console.log('--- Gemini Inference Stats ---');
   console.log(`  Total calls: ${inferStats.totalCalls}`);
-  console.log(`  Claude: ${inferStats.claudeCalls} | Gemini: ${inferStats.geminiCalls} | Dual: ${inferStats.dualCalls}`);
-  if (inferStats.dualCalls > 0) {
-    const agreementRate = inferStats.agreements / (inferStats.agreements + inferStats.disagreements) * 100;
-    console.log(`  Agreement rate: ${agreementRate.toFixed(1)}% (${inferStats.agreements}/${inferStats.agreements + inferStats.disagreements})`);
-  }
+  console.log(`  Gemini calls: ${inferStats.geminiCalls}`);
   console.log(`  Errors: ${inferStats.errors}`);
   console.log(`  Avg latency: ${inferStats.avgLatencyMs}ms`);
   console.log('');
@@ -163,15 +145,8 @@ async function main(): Promise<void> {
   if (config.consolidate) {
     console.log('--- Dream Consolidation ---\n');
 
-    const apiKey = process.env.OPENROUTER_API_KEY || '';
-    if (!apiKey && !process.env.GOOGLE_API_KEY && !process.env.LOCAL_INFERENCE_URL) {
-      console.log('No inference API key available for consolidation. Skipping.');
-      console.log('Set OPENROUTER_API_KEY, GOOGLE_API_KEY, or LOCAL_INFERENCE_URL to enable.');
-      return;
-    }
-
     const store = new StrategyStore(STRATEGIES_DIR);
-    const dreamInfer = createDreamInference({ apiKey });
+    const dreamInfer = createDreamInference({ apiKey: googleApiKey });
 
     const engine = new DreamEngine({
       adapter: roClawDreamAdapter,

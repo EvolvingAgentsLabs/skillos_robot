@@ -40,11 +40,28 @@ export function extractJSON(text: string): string {
 
 /**
  * Safely parse JSON from LLM output. Returns null on failure.
+ * Attempts truncated JSON recovery by closing open brackets.
  */
 export function parseJSONSafe<T>(text: string): T | null {
+  const json = extractJSON(text);
   try {
-    return JSON.parse(extractJSON(text)) as T;
+    return JSON.parse(json) as T;
   } catch {
-    return null;
+    // Try to salvage truncated JSON by closing open brackets
+    try {
+      let open = 0, openArr = 0;
+      for (const ch of json) {
+        if (ch === '{') open++;
+        else if (ch === '}') open--;
+        else if (ch === '[') openArr++;
+        else if (ch === ']') openArr--;
+      }
+      let fixed = json.replace(/,\s*[^}\]]*$/, '');
+      for (let i = 0; i < openArr; i++) fixed += ']';
+      for (let i = 0; i < open; i++) fixed += '}';
+      return JSON.parse(fixed) as T;
+    } catch {
+      return null;
+    }
   }
 }

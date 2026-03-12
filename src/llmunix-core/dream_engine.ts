@@ -308,7 +308,9 @@ export class DreamEngine {
       sequences.push({
         traces: sorted,
         goal: sorted[0].goal,
-        outcome: hasFailure ? TraceOutcome.FAILURE : TraceOutcome.SUCCESS,
+        outcome: hasFailure ? TraceOutcome.FAILURE : (
+          sorted.some(t => t.outcome === TraceOutcome.SUCCESS) ? TraceOutcome.SUCCESS : TraceOutcome.UNKNOWN
+        ),
         score: 0,
         level: sorted[0].level ?? HierarchyLevel.REACTIVE,
         source,

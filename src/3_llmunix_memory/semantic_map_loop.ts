@@ -9,7 +9,7 @@ import { EventEmitter } from 'events';
 import { logger } from '../shared/logger';
 import { SemanticMap, type SceneAnalysis } from './semantic_map';
 import type { VisionLoop } from '../2_qwen_cerebellum/vision_loop';
-import type { InferenceFunction } from '../2_qwen_cerebellum/inference';
+import type { InferenceFunction } from '../llmunix-core/interfaces';
 import { BytecodeCompiler, Opcode } from '../2_qwen_cerebellum/bytecode_compiler';
 import { UDPTransmitter } from '../2_qwen_cerebellum/udp_transmitter';
 import type { SensorSource } from '../shared/sensor_source';

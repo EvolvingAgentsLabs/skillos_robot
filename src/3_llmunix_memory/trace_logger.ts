@@ -41,6 +41,7 @@ export function appendTrace(goal: string, vlmOutput: string, bytecode: Buffer): 
 **Goal:** ${goal}
 **VLM Reasoning:** ${vlmOutput.trim()}
 **Compiled Bytecode:** \`${formatHex(bytecode)}\`
+**Source:** ${TraceSource.REAL_WORLD}
 ---
 `;
 
