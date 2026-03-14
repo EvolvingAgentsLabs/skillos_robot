@@ -4,13 +4,15 @@
  * Section-based memory system. Domain adapters register their sections
  * (e.g., hardware, identity, skills) and the core assembles them into
  * a unified context for LLM consumption.
+ *
+ * Strategy storage has moved to evolving-memory server. Strategy methods
+ * now delegate to MemoryClient when available, or return empty results.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { HierarchyLevel } from './types';
-import { StrategyStore, type StrategyStoreConfig } from './strategy_store';
 import type { MemorySection } from './interfaces';
+import { MemoryClient } from './memory_client';
 
 // =============================================================================
 // Configuration
@@ -19,7 +21,7 @@ import type { MemorySection } from './interfaces';
 export interface CoreMemoryManagerConfig {
   tracesDir: string;
   strategiesDir: string;
-  strategyStoreConfig?: StrategyStoreConfig;
+  memoryServerUrl?: string;
 }
 
 // =============================================================================
@@ -43,13 +45,14 @@ export class CoreMemoryManager {
   private sections = new Map<string, MemorySection>();
   protected tracesDir: string;
   protected strategiesDir: string;
-  private strategyStore: StrategyStore | null = null;
-  private strategyStoreConfig?: StrategyStoreConfig;
+  private memoryClient: MemoryClient | null = null;
 
   constructor(config: CoreMemoryManagerConfig) {
     this.tracesDir = config.tracesDir;
     this.strategiesDir = config.strategiesDir;
-    this.strategyStoreConfig = config.strategyStoreConfig;
+    if (config.memoryServerUrl) {
+      this.memoryClient = new MemoryClient(config.memoryServerUrl);
+    }
   }
 
   /**
@@ -90,7 +93,7 @@ export class CoreMemoryManager {
   }
 
   /**
-   * Get the full memory context — all registered sections + constraints + traces.
+   * Get the full memory context — all registered sections + traces.
    */
   getFullContext(): string {
     const parts: string[] = [];
@@ -106,18 +109,6 @@ export class CoreMemoryManager {
       }
     }
 
-    // Negative constraints
-    const store = this.ensureStrategyStore();
-    if (store.isAvailable()) {
-      const constraints = store.getNegativeConstraints();
-      if (constraints.length > 0) {
-        const constraintLines = constraints.map(c =>
-          `- **${c.severity.toUpperCase()}**: ${c.description} (context: ${c.context})`
-        );
-        parts.push(`## Learned Constraints (Don'ts)\n${constraintLines.join('\n')}`);
-      }
-    }
-
     // Recent traces
     const traces = this.getRecentTraces();
     if (traces) parts.push(`## Recent Traces\n${traces}`);
@@ -125,28 +116,11 @@ export class CoreMemoryManager {
     return parts.join('\n\n');
   }
 
-  // ---------------------------------------------------------------------------
-  // Strategy-aware methods
-  // ---------------------------------------------------------------------------
-
-  getStrategiesForLevel(level: HierarchyLevel) {
-    return this.ensureStrategyStore().getStrategiesForLevel(level);
-  }
-
-  findRelevantStrategies(goal: string, level: HierarchyLevel) {
-    return this.ensureStrategyStore().findStrategies(goal, level);
-  }
-
-  getNegativeConstraints(context?: string) {
-    return this.ensureStrategyStore().getNegativeConstraints(context);
-  }
-
-  getStrategyStore(): StrategyStore {
-    return this.ensureStrategyStore();
-  }
-
-  hasStrategies(): boolean {
-    return this.ensureStrategyStore().isAvailable();
+  /**
+   * Get the MemoryClient for remote strategy/memory queries.
+   */
+  getMemoryClient(): MemoryClient | null {
+    return this.memoryClient;
   }
 
   /**
@@ -154,9 +128,6 @@ export class CoreMemoryManager {
    */
   refreshCache(): void {
     this.cache.clear();
-    if (this.strategyStore) {
-      this.strategyStore.rebuildIndex();
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -170,14 +141,5 @@ export class CoreMemoryManager {
     const value = loader();
     this.cache.set(key, value);
     return value;
-  }
-
-  protected ensureStrategyStore(): StrategyStore {
-    if (!this.strategyStore) {
-      this.strategyStore = this.strategyStoreConfig
-        ? new StrategyStore(this.strategyStoreConfig)
-        : new StrategyStore(this.strategiesDir);
-    }
-    return this.strategyStore;
   }
 }

@@ -1,27 +1,18 @@
 /**
- * RoClaw Dreaming Engine v2 — LLM-Powered Memory Consolidation
+ * RoClaw Dreaming Engine v3 — Remote Memory Consolidation
  *
- * Three biological sleep phases modeled on SHY + Active Systems Consolidation:
+ * Delegates all dream processing to the evolving-memory server.
+ * The local DreamEngine, StrategyStore, and TraceLogger are replaced
+ * by a single HTTP call to the evolving-memory REST API.
  *
- * Phase 1 — Slow Wave Sleep (Replay & Pruning):
- *   Read traces, group into sequences, score, extract failure constraints.
- *
- * Phase 2 — REM Sleep (Strategy Abstraction):
- *   Summarize successful traces, create/merge strategies via LLM.
- *
- * Phase 3 — Consolidation:
- *   Write strategies to disk, append journal, prune old traces.
+ * Prerequisites:
+ *   python -m evolving_memory.server --port 8420
  *
  * Usage: npm run dream
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import * as dotenv from 'dotenv';
-import { DreamEngine } from '../src/llmunix-core/dream_engine';
-import { StrategyStore } from '../src/3_llmunix_memory/strategy_store';
-import { createDreamInference } from '../src/3_llmunix_memory/dream_inference';
-import { roClawDreamAdapter } from '../src/3_llmunix_memory/roclaw_dream_adapter';
+import { MemoryClient } from '../src/llmunix-core/memory_client';
 
 dotenv.config();
 
@@ -29,91 +20,53 @@ dotenv.config();
 // Configuration
 // =============================================================================
 
-const TRACES_DIR = path.join(__dirname, '..', 'src', '3_llmunix_memory', 'traces');
-const STRATEGIES_DIR = path.join(__dirname, '..', 'src', '3_llmunix_memory', 'strategies');
-const SEEDS_DIR = path.join(STRATEGIES_DIR, '_seeds');
-
-const TRACE_BATCH_SIZE = parseInt(process.env.DREAM_BATCH_SIZE || '10', 10);
-const TRACE_WINDOW_DAYS = parseInt(process.env.DREAM_WINDOW_DAYS || '7', 10);
-const TRACE_RETENTION_DAYS = parseInt(process.env.DREAM_RETENTION_DAYS || '7', 10);
-
-// =============================================================================
-// Seed Installation
-// =============================================================================
-
-function installSeeds(): boolean {
-  if (!fs.existsSync(SEEDS_DIR)) return false;
-
-  const seeds = fs.readdirSync(SEEDS_DIR).filter(f => f.endsWith('.md'));
-  if (seeds.length === 0) return false;
-
-  console.log(`Found ${seeds.length} seed strateg${seeds.length === 1 ? 'y' : 'ies'} in ${SEEDS_DIR}`);
-  return true;
-}
+const MEMORY_SERVER_URL = process.env.MEMORY_SERVER_URL || 'http://localhost:8420';
 
 // =============================================================================
 // Main
 // =============================================================================
 
 async function main(): Promise<void> {
-  console.log('=== RoClaw Dreaming Engine v2 ===\n');
+  console.log('=== RoClaw Dreaming Engine v3 (Remote) ===\n');
 
-  const store = new StrategyStore(STRATEGIES_DIR);
+  const client = new MemoryClient(MEMORY_SERVER_URL);
 
-  // Check for API key
-  const apiKey = process.env.OPENROUTER_API_KEY || '';
-  if (!apiKey && !process.env.LOCAL_INFERENCE_URL) {
-    console.log('No API key or local inference URL configured.');
-    console.log('Set OPENROUTER_API_KEY or LOCAL_INFERENCE_URL in .env');
-    console.log('\nInstalling seed strategies only...');
-
-    // Ensure directory structure exists
-    for (const dir of ['level_1_goals', 'level_2_routes', 'level_3_tactical', 'level_4_motor', '_seeds']) {
-      const fullPath = path.join(STRATEGIES_DIR, dir);
-      if (!fs.existsSync(fullPath)) {
-        fs.mkdirSync(fullPath, { recursive: true });
-      }
-    }
-    // Create files if missing
-    for (const file of ['_negative_constraints.md', '_dream_journal.md']) {
-      const fullPath = path.join(STRATEGIES_DIR, file);
-      if (!fs.existsSync(fullPath)) {
-        fs.writeFileSync(fullPath, `# ${file.replace(/[_-]/g, ' ').replace('.md', '')}\n`);
-      }
-    }
-
-    installSeeds();
-    console.log('\nDone! Seed strategies are ready. Run the robot to generate traces, then dream again.');
-    return;
+  // Health check
+  try {
+    const health = await client.health();
+    console.log(`Memory server: ${health.status}`);
+  } catch (err) {
+    console.error(`Cannot reach memory server at ${MEMORY_SERVER_URL}`);
+    console.error('Start it with: python -m evolving_memory.server');
+    process.exit(1);
   }
 
-  const infer = createDreamInference({ apiKey });
+  // Run dream cycle with robotics domain adapter
+  console.log('\nRunning dream cycle (domain: robotics)...');
+  const result = await client.runDream('robotics');
 
-  // Create dream engine with RoClaw adapter
-  const engine = new DreamEngine({
-    adapter: roClawDreamAdapter,
-    infer,
-    store,
-    tracesDir: TRACES_DIR,
-    config: {
-      traceBatchSize: TRACE_BATCH_SIZE,
-      traceWindowDays: TRACE_WINDOW_DAYS,
-      traceRetentionDays: TRACE_RETENTION_DAYS,
-    },
-  });
+  console.log(`\nDream complete:`);
+  console.log(`  Traces processed: ${result.traces_processed}`);
+  console.log(`  Nodes created:    ${result.nodes_created}`);
+  console.log(`  Nodes merged:     ${result.nodes_merged}`);
+  console.log(`  Edges created:    ${result.edges_created}`);
+  console.log(`  Constraints:      ${result.constraints_extracted}`);
 
-  // Check for new traces
-  const lastDream = store.getLastDreamTimestamp();
-  const traces = engine.parseTraceFiles(lastDream ?? undefined);
-  if (traces.length === 0) {
-    console.log('\nNo new traces to dream about.');
-    installSeeds();
-    console.log('Go explore first, then dream again!');
-    return;
+  if (result.phase_log.length > 0) {
+    console.log('\nPhase log:');
+    for (const line of result.phase_log) {
+      console.log(`  ${line}`);
+    }
   }
 
-  // Run the full dream cycle
-  await engine.dream();
+  // Show stats
+  const stats = await client.stats();
+  console.log(`\nMemory stats:`);
+  console.log(`  Parent nodes: ${stats.parent_nodes}`);
+  console.log(`  Child nodes:  ${stats.child_nodes}`);
+  console.log(`  Edges:        ${stats.edges}`);
+  console.log(`  Sessions:     ${stats.sessions}`);
+  console.log(`  Dream cycles: ${stats.dream_cycles}`);
 }
 
 main().catch(err => {

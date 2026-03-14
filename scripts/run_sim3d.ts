@@ -28,10 +28,7 @@ import { VisionLoop } from '../src/2_qwen_cerebellum/vision_loop';
 import { CerebellumInference } from '../src/2_qwen_cerebellum/inference';
 import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/2_qwen_cerebellum/gemini_robotics';
 import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_tools';
-import { DreamEngine } from '../src/llmunix-core/dream_engine';
-import { StrategyStore } from '../src/3_llmunix_memory/strategy_store';
-import { createDreamInference } from '../src/3_llmunix_memory/dream_inference';
-import { roClawDreamAdapter } from '../src/3_llmunix_memory/roclaw_dream_adapter';
+import { MemoryClient } from '../src/llmunix-core/memory_client';
 import { TraceSource } from '../src/llmunix-core/types';
 
 dotenv.config();
@@ -123,51 +120,19 @@ if (mode === 'go_to' && !goal) {
 // =============================================================================
 
 async function runDreamConsolidation(): Promise<void> {
-  const TRACES_DIR = path.join(__dirname, '..', 'src', '3_llmunix_memory', 'traces');
-  const STRATEGIES_DIR = path.join(__dirname, '..', 'src', '3_llmunix_memory', 'strategies');
+  const memoryServerUrl = process.env.MEMORY_SERVER_URL || 'http://localhost:8420';
+  const client = new MemoryClient(memoryServerUrl);
 
-  const googleApiKey = process.env.GOOGLE_API_KEY;
-  const dreamProvider = process.env.DREAM_PROVIDER;
-
-  if (!config.apiKey && !config.localInferenceUrl && !googleApiKey) {
-    logger.warn('Sim3D', 'No API key for dream — run `npm run dream` manually.');
+  try {
+    await client.health();
+  } catch {
+    logger.warn('Sim3D', `Cannot reach memory server at ${memoryServerUrl} — run 'python -m evolving_memory.server' first.`);
     return;
   }
 
-  logger.info('Sim3D', 'Running dream consolidation...');
-  const store = new StrategyStore(STRATEGIES_DIR);
-
-  let dreamInfer;
-  if (dreamProvider === 'gemini' || (googleApiKey && !config.apiKey && !config.localInferenceUrl)) {
-    // Use Gemini for dream inference (deep analysis with thinking budget)
-    const geminiDream = new GeminiRoboticsInference({
-      apiKey: googleApiKey!,
-      model: process.env.GEMINI_MODEL || 'gemini-robotics-er-1.5-preview',
-      maxOutputTokens: 2048,
-      temperature: 0.3,
-      timeoutMs: 30000,
-      thinkingBudget: parseInt(process.env.GEMINI_THINKING_BUDGET || '1024', 10),
-      useToolCalling: false,
-    });
-    dreamInfer = geminiDream.createInferenceFunction();
-    logger.info('Sim3D', 'Dream provider: Gemini');
-  } else {
-    dreamInfer = createDreamInference({
-      apiKey: config.apiKey,
-      ...(config.localInferenceUrl ? { apiBaseUrl: config.localInferenceUrl } : {}),
-    });
-    logger.info('Sim3D', 'Dream provider: OpenRouter');
-  }
-
-  const engine = new DreamEngine({
-    adapter: roClawDreamAdapter,
-    infer: dreamInfer,
-    store,
-    tracesDir: TRACES_DIR,
-  });
-
-  const result = await engine.dream();
-  logger.info('Sim3D', `Dream: ${result.tracesProcessed} traces → ${result.strategiesCreated.length} new, ${result.strategiesUpdated.length} updated`);
+  logger.info('Sim3D', 'Running dream consolidation via evolving-memory server...');
+  const result = await client.runDream('robotics');
+  logger.info('Sim3D', `Dream: ${result.traces_processed} traces → ${result.nodes_created} created, ${result.nodes_merged} merged`);
 }
 
 // =============================================================================

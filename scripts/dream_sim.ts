@@ -21,10 +21,7 @@ import {
   SCENARIOS,
 } from '../src/3_llmunix_memory/dream_simulator';
 
-import { DreamEngine } from '../src/llmunix-core/dream_engine';
-import { StrategyStore } from '../src/3_llmunix_memory/strategy_store';
-import { createDreamInference } from '../src/3_llmunix_memory/dream_inference';
-import { roClawDreamAdapter } from '../src/3_llmunix_memory/roclaw_dream_adapter';
+import { MemoryClient } from '../src/llmunix-core/memory_client';
 
 dotenv.config();
 
@@ -141,29 +138,25 @@ async function main(): Promise<void> {
   console.log(`  Avg latency: ${inferStats.avgLatencyMs}ms`);
   console.log('');
 
-  // Dream consolidation
+  // Dream consolidation via evolving-memory server
   if (config.consolidate) {
-    console.log('--- Dream Consolidation ---\n');
+    console.log('--- Dream Consolidation (Remote) ---\n');
 
-    const store = new StrategyStore(STRATEGIES_DIR);
-    const dreamInfer = createDreamInference({ apiKey: googleApiKey });
+    const memoryServerUrl = process.env.MEMORY_SERVER_URL || 'http://localhost:8420';
+    const client = new MemoryClient(memoryServerUrl);
 
-    const engine = new DreamEngine({
-      adapter: roClawDreamAdapter,
-      infer: dreamInfer,
-      store,
-      tracesDir: TRACES_DIR,
-    });
-
-    const dreamResult = await engine.dream();
-
-    console.log('\n--- Consolidation Summary ---');
-    console.log(`  Traces processed: ${dreamResult.tracesProcessed}`);
-    console.log(`  Strategies created: ${dreamResult.strategiesCreated.length}`);
-    console.log(`  Strategies updated: ${dreamResult.strategiesUpdated.length}`);
-    console.log(`  Constraints learned: ${dreamResult.constraintsLearned.length}`);
-    console.log(`  Traces pruned: ${dreamResult.tracesPruned}`);
-    console.log(`  Journal: ${dreamResult.journalEntry.summary}`);
+    try {
+      const dreamResult = await client.runDream('robotics');
+      console.log('\n--- Consolidation Summary ---');
+      console.log(`  Traces processed: ${dreamResult.traces_processed}`);
+      console.log(`  Nodes created: ${dreamResult.nodes_created}`);
+      console.log(`  Nodes merged: ${dreamResult.nodes_merged}`);
+      console.log(`  Edges created: ${dreamResult.edges_created}`);
+      console.log(`  Constraints: ${dreamResult.constraints_extracted}`);
+    } catch (err) {
+      console.error(`Dream consolidation failed — is evolving-memory server running at ${memoryServerUrl}?`);
+      console.error(err);
+    }
   }
 
   console.log('\nDream simulation complete.');
