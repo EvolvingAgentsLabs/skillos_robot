@@ -42,8 +42,10 @@ RoClaw uses a biological dual-brain design: a slow-thinking **Cortex** for strat
 graph TD
     USER[User via WhatsApp/Voice] -->|"Go check the kitchen"| SKILLOS[skillos — Prefrontal Cortex]
     SKILLOS -->|"HTTP :8430"| BRIDGE[roclaw_bridge.py]
-    BRIDGE -->|WebSocket| CORTEX[1. Cortex — OpenClaw Node]
+    BRIDGE -->|"WebSocket (real hw)"| CORTEX[1. Cortex — OpenClaw Node]
+    BRIDGE -->|"HTTP :8440 (sim)"| TOOLSRV["run_sim3d.ts --serve"]
     CORTEX -->|"Plan: hallway → kitchen"| PLANNER[Hierarchical Planner]
+    TOOLSRV -->|handleTool| PLANNER
     PLANNER -->|"Strategy-informed goal"| CEREBELLUM[2. Cerebellum — Gemini 3.1 Flash Lite]
     CEREBELLUM -->|"Sees camera frame"| COMPILE[Bytecode Compiler]
     COMPILE -->|"AA 01 64 64 CB FF"| ESP[ESP32-S3 / mjswan Bridge]
@@ -199,8 +201,12 @@ npm run sim:3d
 # 3. Open browser — MuJoCo simulation with orbit camera view
 open http://localhost:8000?bridge=ws://localhost:9090
 
-# 4. Run the VLM loop (separate terminal)
+# 4a. Run a single goal (exits when done)
 npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
+
+# 4b. Or start the HTTP tool server (stays alive, accepts remote tool invocations)
+npx tsx scripts/run_sim3d.ts --serve --gemini
+# Now curl http://localhost:8440/health or POST /invoke from skillos
 ```
 
 | Port | Protocol | Direction | Purpose |
@@ -208,6 +214,7 @@ npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
 | 9090 | WebSocket | Bridge <-> Browser | Motor commands + camera frames + pose |
 | 4210 | UDP | RoClaw stack -> Bridge | 6-byte bytecode frames |
 | 8081 | HTTP MJPEG | Bridge -> VisionLoop | First-person camera stream |
+| 8440 | HTTP | skillos bridge -> Tool server | Tool invocations via `--serve` mode |
 
 ---
 
@@ -220,23 +227,40 @@ npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
 - **RoClawSceneAnalysisAgent** — VLM scene interpretation and location verification
 - **RoClawDreamAgent** — Bio-inspired dream consolidation (SWS → REM → Consolidation)
 
-**Testing skillos + RoClaw (simulation mode):**
+**Testing skillos + RoClaw (mock mode — no hardware, no sim):**
+
+```bash
+# Terminal 1: Start the skillos → RoClaw bridge (mock responses)
+cd skillos && python roclaw_bridge.py --port 8430 --simulate
+
+# Terminal 2: Run skillos with a RoClaw goal
+cd skillos && skillos execute: "Navigate to the kitchen and describe what you see"
+```
+
+**Testing skillos + RoClaw (live MuJoCo simulation):**
 
 ```bash
 # Terminal 1: Start evolving-memory (Hippocampus)
 cd evolving-memory && python -m evolving_memory.server --port 8420
 
-# Terminal 2: Start mjswan bridge + scene (already running if you followed sim setup)
-cd RoClaw && npm run sim:3d
+# Terminal 2: Start mjswan scene + bridge
+cd RoClaw/sim && python build_scene.py   # serves :8000
+cd RoClaw && npm run sim:3d              # :9090 WS, :4210 UDP, :8081 MJPEG
 
-# Terminal 3: Start the skillos → RoClaw bridge
-cd skillos && python roclaw_bridge.py --port 8430 --simulate
+# Terminal 3: Start the HTTP tool server (initializes VisionLoop once, stays alive)
+cd RoClaw && npx tsx scripts/run_sim3d.ts --serve --gemini   # :8440
 
-# Terminal 4: Run skillos with a RoClaw goal
-cd skillos && skillos execute: "Navigate to the kitchen and describe what you see"
+# Terminal 4: Start the skillos → tool server bridge
+cd skillos && python roclaw_bridge.py --port 8430 --tool-server http://localhost:8440
+
+# Terminal 5: Run skillos with a RoClaw goal
+cd skillos && skillos execute: "Navigate to the red cube and describe what you see"
 ```
 
-The bridge (`roclaw_bridge.py`) translates skillos REST calls into WebSocket tool invocations that RoClaw's OpenClaw Gateway understands. Use `--simulate` for virtual mode or `--gateway ws://localhost:8080` for real hardware.
+The bridge (`roclaw_bridge.py`) translates skillos REST calls into tool invocations via one of three backends:
+- `--tool-server http://localhost:8440` — HTTP to `run_sim3d.ts --serve` (MuJoCo sim, full VLM)
+- `--gateway ws://localhost:8080` — WebSocket to OpenClaw Gateway (real hardware)
+- `--simulate` — mock responses (no hardware, no sim)
 
 ---
 

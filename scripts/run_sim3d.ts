@@ -15,10 +15,13 @@
  *   npx tsx scripts/run_sim3d.ts --explore
  *   npx tsx scripts/run_sim3d.ts --goal "the red cube" --dream
  *   npx tsx scripts/run_sim3d.ts --goal "the door" --constraints "stay close to walls"
+ *   npx tsx scripts/run_sim3d.ts --serve --gemini           # HTTP tool server on :8440
+ *   npx tsx scripts/run_sim3d.ts --serve --serve-port 9000  # custom port
  *   npx tsx scripts/run_sim3d.ts --help
  */
 
 import * as dgram from 'dgram';
+import * as http from 'http';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { logger } from '../src/shared/logger';
@@ -58,6 +61,8 @@ let mode: 'go_to' | 'explore' = 'go_to';
 let dreamOnShutdown: boolean | undefined;
 let constraints: string | undefined;
 let useGemini = false;
+let serveMode = false;
+let servePort = 8440;
 
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -80,6 +85,12 @@ for (let i = 0; i < args.length; i++) {
     case '--gemini':
       useGemini = true;
       break;
+    case '--serve':
+      serveMode = true;
+      break;
+    case '--serve-port':
+      servePort = parseInt(args[++i] || '8440', 10);
+      break;
     case '--help':
       console.log(`Usage: npx tsx scripts/run_sim3d.ts [options]
 
@@ -90,6 +101,8 @@ Options:
   --no-dream            Disable dream consolidation on shutdown
   --constraints <text>  Additional constraints for navigation
   --gemini              Use Gemini Robotics-ER instead of Qwen-VL (requires GOOGLE_API_KEY)
+  --serve               Start HTTP tool server instead of running a single goal
+  --serve-port <port>   Port for the HTTP tool server (default: 8440)
   --help                Show this help message
 
 Examples:
@@ -98,6 +111,8 @@ Examples:
   npx tsx scripts/run_sim3d.ts --goal "the red cube" --dream
   npx tsx scripts/run_sim3d.ts --goal "the door" --constraints "stay close to walls"
   GOOGLE_API_KEY=... npx tsx scripts/run_sim3d.ts --gemini --goal "find the red cube"
+  npx tsx scripts/run_sim3d.ts --serve --gemini  # Tool server on :8440
+  npx tsx scripts/run_sim3d.ts --serve --serve-port 9000 --gemini
 `);
       process.exit(0);
   }
@@ -141,7 +156,11 @@ async function runDreamConsolidation(): Promise<void> {
 
 async function main(): Promise<void> {
   logger.info('Sim3D', '=== RoClaw mjswan Full Cognitive Stack ===');
-  logger.info('Sim3D', `Mode: ${mode}${mode === 'go_to' ? ` | Goal: "${goal}"` : ''}`);
+  if (serveMode) {
+    logger.info('Sim3D', `Mode: SERVE (HTTP tool server on :${servePort})`);
+  } else {
+    logger.info('Sim3D', `Mode: ${mode}${mode === 'go_to' ? ` | Goal: "${goal}"` : ''}`);
+  }
   if (constraints) logger.info('Sim3D', `Constraints: "${constraints}"`);
   if (dreamOnShutdown) logger.info('Sim3D', 'Dream consolidation enabled on shutdown');
 
@@ -217,6 +236,122 @@ async function main(): Promise<void> {
   // 5. Build ToolContext and dispatch via handleTool
   //    Tag traces as SIM_3D: physics-based simulation with rendered frames + real VLM
   const ctx: ToolContext = { compiler, transmitter, visionLoop, infer, traceSource: TraceSource.SIM_3D };
+
+  // ===================================================================
+  // SERVE MODE — HTTP tool server for external callers (e.g. skillos)
+  // ===================================================================
+  if (serveMode) {
+    const toolNames = [
+      'robot.go_to', 'robot.explore', 'robot.describe_scene',
+      'robot.stop', 'robot.status', 'robot.read_memory',
+      'robot.record_observation', 'robot.analyze_scene', 'robot.get_map',
+    ];
+
+    let shuttingDown = false;
+
+    const server = http.createServer(async (req, res) => {
+      const sendJson = (status: number, data: unknown) => {
+        const body = JSON.stringify(data, null, 2);
+        res.writeHead(status, {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        });
+        res.end(body);
+      };
+
+      const readBody = (): Promise<Record<string, unknown>> =>
+        new Promise((resolve, reject) => {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            if (chunks.length === 0) return resolve({});
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString()));
+            } catch (e) {
+              reject(e);
+            }
+          });
+          req.on('error', reject);
+        });
+
+      const urlPath = (req.url || '').replace(/\/$/, '') || '/';
+
+      try {
+        // GET /health
+        if (req.method === 'GET' && urlPath === '/health') {
+          sendJson(200, { status: 'ok', tools: toolNames });
+          return;
+        }
+
+        // POST /invoke
+        if (req.method === 'POST' && urlPath === '/invoke') {
+          const body = await readBody();
+          const tool = body.tool as string;
+          const args = (body.args || {}) as Record<string, unknown>;
+
+          if (!tool || !toolNames.includes(tool)) {
+            sendJson(400, { success: false, message: `Unknown tool: ${tool}`, available: toolNames });
+            return;
+          }
+
+          logger.info('Serve', `POST /invoke → ${tool}`, args);
+          const result = await handleTool(tool, args, ctx);
+          sendJson(200, result);
+          return;
+        }
+
+        // POST /shutdown
+        if (req.method === 'POST' && urlPath === '/shutdown') {
+          sendJson(200, { success: true, message: 'Shutting down...' });
+
+          if (!shuttingDown) {
+            shuttingDown = true;
+            logger.info('Serve', 'Shutdown requested via HTTP');
+            await handleTool('robot.stop', {}, ctx);
+            if (dreamOnShutdown) await runDreamConsolidation();
+            await transmitter.disconnect();
+            server.close();
+            process.exit(0);
+          }
+          return;
+        }
+
+        sendJson(404, { error: `Unknown endpoint: ${req.method} ${urlPath}` });
+      } catch (err) {
+        logger.error('Serve', 'Request error', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        sendJson(500, { success: false, message: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    server.listen(servePort, '0.0.0.0', () => {
+      logger.info('Serve', `Tool server listening on http://0.0.0.0:${servePort}`);
+      logger.info('Serve', `Available tools: ${toolNames.join(', ')}`);
+      logger.info('Serve', 'Endpoints: GET /health, POST /invoke, POST /shutdown');
+    });
+
+    // Graceful shutdown on signals
+    const shutdownServe = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      logger.info('Serve', 'Shutting down...');
+      await handleTool('robot.stop', {}, ctx);
+      if (dreamOnShutdown) await runDreamConsolidation();
+      await transmitter.disconnect();
+      server.close();
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdownServe);
+    process.on('SIGTERM', shutdownServe);
+
+    // Keep alive — server handles the event loop
+    return;
+  }
+
+  // ===================================================================
+  // SINGLE-GOAL MODE — existing behavior
+  // ===================================================================
 
   // 6. Physics-based goal confirmation polling — start BEFORE handleTool
   //    (handleTool blocks on topo planning; we need to track distance immediately)
