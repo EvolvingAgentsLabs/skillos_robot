@@ -53,16 +53,45 @@ ESP32_CAM_PORT=4747
 ESP32_CAM_PATH=/mjpegfeed
 ```
 
+## Option C: External Overhead Camera (V1 Hardware)
+
+In V1 the robot has **no onboard camera**. An Android phone on a tripod looks down at the entire arena, giving the VLM a bird's-eye view of the robot, obstacles, and targets.
+
+This is an offboard perception architecture — the same pattern used in professional robotics labs. See [docs/11-Hardware-V1-Setup-Guide.md](11-Hardware-V1-Setup-Guide.md) for the complete hardware setup including ESP32-S3 wiring, motor testing, and calibration.
+
+### Setup
+
+1. Mount your phone on a tripod 60-90cm above the arena.
+2. Angle it top-down or at ~60 degrees from horizontal.
+3. Ensure the entire arena is visible at all times.
+4. Install **IP Webcam** and start the server.
+5. Configure `.env`:
+
+```env
+ESP32_CAM_HOST=192.168.1.50
+ESP32_CAM_PORT=8080
+ESP32_CAM_PATH=/video
+EXTERNAL_CAMERA_MODE=overhead
+```
+
+### Test the Connection
+
+```bash
+npm run hardware:test -- --test connectivity
+```
+
 ## Comparison
 
-| Feature | ESP32-CAM | Android Phone |
-|---|---|---|
-| Cost | ~$5 | Uses existing phone |
-| Resolution | Up to 1600x1200 (UXGA) | Up to 1920x1080 |
-| Setup complexity | Requires flashing firmware | Install app and start |
-| Extra sensors | None | Gyroscope, accelerometer, GPS |
-| Power | USB or battery | Phone battery |
-| Form factor | Tiny, mountable | Bulky for a robot |
+| Feature | ESP32-CAM | Android (Onboard) | Android (External/V1) |
+|---|---|---|---|
+| Cost | ~$5 | Uses existing phone | Uses existing phone |
+| Resolution | Up to 1600x1200 | Up to 1920x1080 | Up to 1920x1080 |
+| Setup complexity | Flash firmware | Install app | Install app + tripod |
+| Extra sensors | None | Gyro, accel, GPS | Gyro, accel, GPS |
+| View | First-person (robot) | First-person (robot) | Bird's-eye (overhead) |
+| Full scene visible | No | No | Yes |
+| Power | USB or battery | Phone battery | Phone battery |
+| Form factor | Tiny, mountable | Bulky for a robot | Off-robot (tripod) |
 
 ## Quick `.env` Reference
 

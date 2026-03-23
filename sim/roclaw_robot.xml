@@ -7,6 +7,10 @@
     - Motor: 28BYJ-48 (4096 steps/rev, max 1024 steps/s)
     - Max wheel angular velocity: (1024/4096) * 2*PI = 1.571 rad/s
 
+  Cameras:
+    - "eyes": Forward-facing on robot chassis (onboard, first-person)
+    - "external_cam": Overhead bird's-eye view (matches V1 Android phone on tripod)
+
   Usage:
     Loaded by mjswan via sim/build_scene.py
     Controlled via velocity actuators: left_wheel, right_wheel
@@ -60,6 +64,11 @@
     <body name="red_cube" pos="-0.6 -0.5 0.1">
       <geom type="box" size="0.1 0.1 0.1" material="red_cube_mat"/>
     </body>
+
+    <!-- External overhead camera (matches V1 Android phone on tripod) -->
+    <!-- Positioned 0.8m above arena center, looking straight down -->
+    <camera name="external_cam" pos="0 0 0.8" xyaxes="1 0 0 0 -1 0"
+            fovy="90" resolution="640 480"/>
 
     <!-- ============== RoClaw Robot ============== -->
     <body name="chassis" pos="0 0 0.06">
