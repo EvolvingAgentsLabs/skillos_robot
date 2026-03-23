@@ -33,7 +33,7 @@
     <material name="chassis_mat" rgba="0.2 0.2 0.8 1"/>
     <material name="wheel_mat" rgba="0.15 0.15 0.15 1"/>
     <material name="caster_mat" rgba="0.6 0.6 0.6 1"/>
-    <material name="obstacle_mat" rgba="0.8 0.3 0.2 1"/>
+    <material name="obstacle_mat" rgba="0.4 0.3 0.8 1"/>
     <material name="obstacle2_mat" rgba="0.2 0.7 0.3 1"/>
     <material name="obstacle3_mat" rgba="0.9 0.7 0.1 1"/>
     <material name="red_cube_mat" rgba="1.0 0.0 0.0 1"/>
