@@ -22,7 +22,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 
 import {
   Opcode, OPCODE_NAMES, decodeFrame, formatHex, FRAME_SIZE,
-  type BytecodeFrame,
+  decodeFrameAuto, encodeFrameV2, ACK_FLAG, ACK_OPCODE, FRAME_SIZE_V2,
+  type BytecodeFrame, type BytecodeFrameV2,
 } from './2_qwen_cerebellum/bytecode_compiler';
 import { DEFAULT_28BYJ48_SPEC } from './shared/stepper-kinematics';
 
@@ -66,6 +67,21 @@ interface BridgeState {
   targetDistance: number;
   /** Whether the robot is within the target's arrival radius */
   goalReached: boolean;
+  /** Last known UDP client address (for telemetry push) */
+  lastClientRinfo: dgram.RemoteInfo | null;
+  /** Stall detection: last pose snapshot and timestamp */
+  stallPose: { x: number; y: number; ts: number };
+  /** Whether robot is currently stalled */
+  stall: boolean;
+}
+
+/** Telemetry message pushed from bridge to RoClaw stack */
+export interface TelemetryMessage {
+  telemetry: true;
+  pose: { x: number; y: number; h: number };
+  vel: { left: number; right: number };
+  stall: boolean;
+  ts: number;
 }
 
 /** WebSocket message: bridge -> browser */
@@ -348,14 +364,38 @@ function startUdpServer(
   const socket = dgram.createSocket('udp4');
 
   socket.on('message', (msg: Buffer, rinfo: dgram.RemoteInfo) => {
-    const frame = decodeFrame(msg);
-    if (!frame) {
+    const frameV2 = decodeFrameAuto(msg);
+    if (!frameV2) {
       if (config.verbose) {
         console.log(`[UDP] Invalid frame from ${rinfo.address}:${rinfo.port}: ${formatHex(msg)}`);
       }
       return;
     }
 
+    // Track last client for telemetry broadcast
+    state.lastClientRinfo = rinfo;
+
+    // Send ACK if requested (V2 protocol)
+    if (frameV2.flags & ACK_FLAG) {
+      const ackFrame = encodeFrameV2({
+        opcode: ACK_OPCODE,
+        paramLeft: 0,
+        paramRight: 0,
+        sequenceNumber: frameV2.sequenceNumber,
+        flags: 0,
+      });
+      socket.send(ackFrame, rinfo.port, rinfo.address);
+      if (config.verbose) {
+        console.log(`[UDP] ACK sent for seq ${frameV2.sequenceNumber}`);
+      }
+    }
+
+    // Extract V1 BytecodeFrame for bytecodeToCtrl (unchanged)
+    const frame: BytecodeFrame = {
+      opcode: frameV2.opcode,
+      paramLeft: frameV2.paramLeft,
+      paramRight: frameV2.paramRight,
+    };
     const opName = OPCODE_NAMES[frame.opcode] || `0x${frame.opcode.toString(16).toUpperCase()}`;
 
     // Record command
@@ -468,6 +508,61 @@ function startCameraServer(
 }
 
 // =============================================================================
+// Telemetry Broadcast — push status + stall detection
+// =============================================================================
+
+const STALL_THRESHOLD_MS = 1000;
+const STALL_POSITION_EPSILON = 0.005;
+
+/**
+ * Start periodic telemetry broadcast to the last known UDP client.
+ * Includes stall detection: if velocity != 0 but pose unchanged for > 1s.
+ */
+export function startTelemetryBroadcast(
+  socket: dgram.Socket,
+  state: BridgeState,
+  config: BridgeConfig,
+): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    if (!state.lastClientRinfo) return;
+
+    // Stall detection
+    const moving = state.lastCtrl[0] !== 0 || state.lastCtrl[1] !== 0;
+    const dx = Math.abs(state.pose.x - state.stallPose.x);
+    const dy = Math.abs(state.pose.y - state.stallPose.y);
+    const positionChanged = dx > STALL_POSITION_EPSILON || dy > STALL_POSITION_EPSILON;
+
+    if (positionChanged) {
+      state.stallPose = { x: state.pose.x, y: state.pose.y, ts: Date.now() };
+      state.stall = false;
+    } else if (moving && (Date.now() - state.stallPose.ts) > STALL_THRESHOLD_MS) {
+      state.stall = true;
+    } else if (!moving) {
+      state.stall = false;
+      state.stallPose.ts = Date.now();
+    }
+
+    const telemetry: TelemetryMessage = {
+      telemetry: true,
+      pose: {
+        x: Math.round(state.pose.x * 1000) / 1000,
+        y: Math.round(state.pose.y * 1000) / 1000,
+        h: Math.round(state.pose.h * 1000) / 1000,
+      },
+      vel: {
+        left: Math.round(state.lastCtrl[0] * 1000) / 1000,
+        right: Math.round(state.lastCtrl[1] * 1000) / 1000,
+      },
+      stall: state.stall,
+      ts: Date.now(),
+    };
+
+    const buf = Buffer.from(JSON.stringify(telemetry));
+    socket.send(buf, state.lastClientRinfo.port, state.lastClientRinfo.address);
+  }, 500);
+}
+
+// =============================================================================
 // Terminal Dashboard
 // =============================================================================
 
@@ -534,12 +629,18 @@ async function main(): Promise<void> {
     pose: { x: 0, y: 0, h: 0 },
     targetDistance: Math.sqrt(target.x * target.x + target.y * target.y),
     goalReached: false,
+    lastClientRinfo: null,
+    stallPose: { x: 0, y: 0, ts: Date.now() },
+    stall: false,
   };
 
   // Start servers
   const wss = startWebSocketServer(config, state, latestJpeg, target);
   const udpSocket = startUdpServer(config, state, wss, target);
   const camServer = startCameraServer(config, latestJpeg);
+
+  // Telemetry broadcast: push pose + stall status to last known UDP client every 500ms
+  const telemetryInterval = startTelemetryBroadcast(udpSocket, state, config);
 
   // Banner
   if (config.verbose) {
@@ -578,6 +679,7 @@ async function main(): Promise<void> {
 
   // Graceful shutdown
   const shutdown = () => {
+    clearInterval(telemetryInterval);
     if (dashboardInterval) clearInterval(dashboardInterval);
 
     if (!config.verbose) {

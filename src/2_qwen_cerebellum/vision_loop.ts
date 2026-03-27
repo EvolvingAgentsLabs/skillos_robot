@@ -35,6 +35,8 @@ export interface VisionLoopConfig {
   frameHistorySize: number;
   /** Use tool-calling system prompt instead of hex bytecode prompt (for Gemini with function calling) */
   useToolCallingPrompt?: boolean;
+  /** ms to wait after STOP before inference (default: 100). Set to 0 to skip settle delay. */
+  stopSettleMs?: number;
 }
 
 export interface VisionLoopStats {
@@ -242,6 +244,7 @@ export class VisionLoop extends EventEmitter {
         ? `What do you see? Call the appropriate motor control function for the goal: ${this.currentGoal}`
         : 'What do you see? Output the next motor command.';
 
+    await this.stopAndSettle();
     this.startInferenceHeartbeat();
     try {
       const vlmOutput = await this.infer(systemPrompt, userMessage, frames);
@@ -344,6 +347,25 @@ export class VisionLoop extends EventEmitter {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * Send a STOP frame and wait for the robot to settle before VLM inference.
+   * This prevents "coasting blind" — motors running while VLM thinks (5-30s).
+   */
+  private async stopAndSettle(): Promise<void> {
+    try {
+      const stopFrame = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+      await this.transmitter.send(stopFrame);
+    } catch (err) {
+      logger.warn('VisionLoop', 'STOP-before-inference failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    const settleMs = this.config.stopSettleMs ?? 100;
+    if (settleMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, settleMs));
     }
   }
 
@@ -510,6 +532,7 @@ export class VisionLoop extends EventEmitter {
 
   private async processFrame(jpegData: Buffer): Promise<void> {
     this.processingFrame = true;
+    await this.stopAndSettle();
     this.startInferenceHeartbeat();
 
     try {

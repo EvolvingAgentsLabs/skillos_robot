@@ -1,6 +1,9 @@
 import * as dgram from 'dgram';
 import { UDPTransmitter } from '../../src/2_qwen_cerebellum/udp_transmitter';
-import { encodeFrame, Opcode, FRAME_SIZE } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+import {
+  encodeFrame, encodeFrameV2, decodeFrameV2, Opcode, FRAME_SIZE, FRAME_SIZE_V2,
+  ACK_FLAG, ACK_OPCODE,
+} from '../../src/2_qwen_cerebellum/bytecode_compiler';
 
 describe('UDPTransmitter', () => {
   let transmitter: UDPTransmitter;
@@ -179,5 +182,94 @@ describe('UDPTransmitter', () => {
     const stats = transmitter.getStats();
     expect(stats.currentSequence).toBe(0);
     expect(stats.droppedFrames).toBe(0);
+  });
+
+  // ===========================================================================
+  // V2 Protocol — send and sendWithAck
+  // ===========================================================================
+
+  test('send accepts 8-byte V2 frames', async () => {
+    await transmitter.connect();
+
+    const received = new Promise<Buffer>((resolve) => {
+      mockServer.on('message', (msg) => resolve(msg));
+    });
+
+    const frame = encodeFrameV2({
+      opcode: Opcode.MOVE_FORWARD, paramLeft: 100, paramRight: 100,
+      sequenceNumber: 1, flags: 0,
+    });
+    await transmitter.send(frame);
+
+    const msg = await received;
+    expect(msg.length).toBe(FRAME_SIZE_V2);
+    expect(msg[0]).toBe(0xAA);
+    expect(msg[2]).toBe(Opcode.MOVE_FORWARD);
+  });
+
+  test('sendWithAck resolves when ACK received', async () => {
+    await transmitter.connect();
+
+    // Mock server sends ACK for matching seq
+    mockServer.on('message', (msg, rinfo) => {
+      const decoded = decodeFrameV2(msg);
+      if (decoded && (decoded.flags & ACK_FLAG)) {
+        const ackFrame = encodeFrameV2({
+          opcode: ACK_OPCODE, paramLeft: 0, paramRight: 0,
+          sequenceNumber: decoded.sequenceNumber, flags: 0,
+        });
+        mockServer.send(ackFrame, rinfo.port, rinfo.address);
+      }
+    });
+
+    await transmitter.sendWithAck({
+      opcode: Opcode.MOVE_FORWARD, paramLeft: 128, paramRight: 128,
+      sequenceNumber: 5, flags: 0,
+    });
+
+    const stats = transmitter.getStats();
+    expect(stats.framesSent).toBe(1);
+  });
+
+  test('sendWithAck times out when no ACK received', async () => {
+    const fastTransmitter = new UDPTransmitter({
+      host: '127.0.0.1', port: serverPort, ackTimeoutMs: 50,
+    });
+    await fastTransmitter.connect();
+
+    // Server does NOT respond with ACK
+    await expect(fastTransmitter.sendWithAck({
+      opcode: Opcode.STOP, paramLeft: 0, paramRight: 0,
+      sequenceNumber: 1, flags: 0,
+    })).rejects.toThrow('ACK timeout');
+
+    const stats = fastTransmitter.getStats();
+    expect(stats.droppedFrames).toBe(1);
+
+    await fastTransmitter.disconnect();
+  });
+
+  test('sendWithAck ignores ACK with wrong sequence number', async () => {
+    const fastTransmitter = new UDPTransmitter({
+      host: '127.0.0.1', port: serverPort, ackTimeoutMs: 100,
+    });
+    await fastTransmitter.connect();
+
+    // Server sends ACK with wrong seq
+    mockServer.on('message', (msg, rinfo) => {
+      const ackFrame = encodeFrameV2({
+        opcode: ACK_OPCODE, paramLeft: 0, paramRight: 0,
+        sequenceNumber: 99, // wrong seq
+        flags: 0,
+      });
+      mockServer.send(ackFrame, rinfo.port, rinfo.address);
+    });
+
+    await expect(fastTransmitter.sendWithAck({
+      opcode: Opcode.STOP, paramLeft: 0, paramRight: 0,
+      sequenceNumber: 1, flags: 0,
+    })).rejects.toThrow('ACK timeout');
+
+    await fastTransmitter.disconnect();
   });
 });

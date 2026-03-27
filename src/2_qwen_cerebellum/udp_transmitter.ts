@@ -7,7 +7,11 @@
 
 import * as dgram from 'dgram';
 import { logger } from '../shared/logger';
-import { formatHex, FRAME_SIZE } from './bytecode_compiler';
+import {
+  formatHex, FRAME_SIZE, FRAME_SIZE_V2, ACK_FLAG, ACK_OPCODE,
+  encodeFrameV2, decodeFrameV2,
+  type BytecodeFrameV2,
+} from './bytecode_compiler';
 
 // =============================================================================
 // Types
@@ -22,6 +26,10 @@ export interface TransmitterConfig {
   timeoutMs: number;
   /** Max retries on failure (default: 1) */
   maxRetries: number;
+  /** Enable V2 protocol (8-byte frames with sequence numbers) */
+  useV2Protocol?: boolean;
+  /** Timeout in ms waiting for ACK response (default: 200) */
+  ackTimeoutMs?: number;
 }
 
 export interface TransmitterStats {
@@ -112,8 +120,8 @@ export class UDPTransmitter {
       throw new Error('UDP transmitter not connected');
     }
 
-    if (frame.length !== FRAME_SIZE) {
-      throw new Error(`Invalid frame size: ${frame.length}, expected ${FRAME_SIZE}`);
+    if (frame.length !== FRAME_SIZE && frame.length !== FRAME_SIZE_V2) {
+      throw new Error(`Invalid frame size: ${frame.length}, expected ${FRAME_SIZE} or ${FRAME_SIZE_V2}`);
     }
 
     let lastError: Error | null = null;
@@ -172,6 +180,52 @@ export class UDPTransmitter {
       this.sendRaw(frame).catch((err) => {
         clearTimeout(timer);
         this.socket?.removeListener('message', onMessage);
+        reject(err);
+      });
+    });
+  }
+
+  /**
+   * Send a V2 frame with ACK_FLAG set and wait for an ACK response
+   * matching the sequence number.
+   */
+  async sendWithAck(frame: BytecodeFrameV2): Promise<void> {
+    if (!this.connected || !this.socket) {
+      throw new Error('UDP transmitter not connected');
+    }
+
+    const ackFrame: BytecodeFrameV2 = {
+      ...frame,
+      flags: frame.flags | ACK_FLAG,
+    };
+    const encoded = encodeFrameV2(ackFrame);
+    const timeout = this.config.ackTimeoutMs ?? 200;
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.socket?.removeListener('message', onMessage);
+        this.droppedFrames++;
+        reject(new Error('ACK timeout'));
+      }, timeout);
+
+      const onMessage = (msg: Buffer) => {
+        const decoded = decodeFrameV2(msg);
+        if (decoded && decoded.opcode === ACK_OPCODE && decoded.sequenceNumber === ackFrame.sequenceNumber) {
+          clearTimeout(timer);
+          this.socket?.removeListener('message', onMessage);
+          this.stats.framesSent++;
+          this.stats.bytesTransmitted += encoded.length;
+          this.sequenceNumber++;
+          resolve();
+        }
+      };
+
+      this.socket!.on('message', onMessage);
+
+      this.sendRaw(encoded).catch((err) => {
+        clearTimeout(timer);
+        this.socket?.removeListener('message', onMessage);
+        this.stats.errors++;
         reject(err);
       });
     });

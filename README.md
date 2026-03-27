@@ -91,7 +91,7 @@ Bytecode (6 bytes):  AA 01 64 64 CB FF
 
 6 bytes. One `memcpy` into a struct. ~0.1ms parse time vs ~15ms for JSON.
 
-### ISA v1 — 13 Opcodes
+### ISA v1.1 — 14 Opcodes
 
 | Opcode | Name | Params |
 |--------|------|--------|
@@ -107,7 +107,22 @@ Bytecode (6 bytes):  AA 01 64 64 CB FF
 | `0x0A` | MOVE_STEPS_L | hi, lo |
 | `0x0B` | MOVE_STEPS_R | hi, lo |
 | `0x10` | LED_SET | R, G |
+| `0xFD` | ACK | seq (echo) |
 | `0xFE` | RESET | - |
+
+#### V2 Frame Format (8 bytes)
+
+ISA v1.1 introduces an extended 8-byte frame with sequence numbers and ACK support for reliable delivery over UDP:
+
+```
+V1 (6 bytes): [0xAA][OPCODE][PARAM_L][PARAM_R][CHECKSUM][0xFF]
+V2 (8 bytes): [0xAA][SEQ][OPCODE][PARAM_L][PARAM_R][FLAGS][CHECKSUM][0xFF]
+```
+
+- **SEQ**: 0-255 wrapping sequence number for packet tracking
+- **FLAGS**: bit 0 = ACK_REQUESTED — bridge responds with ACK frame echoing the sequence number
+- **CHECKSUM**: XOR of bytes 1-5 (SEQ through FLAGS)
+- Backward compatible — `decodeFrameAuto()` auto-detects V1 (6-byte) vs V2 (8-byte) frames
 
 ---
 
@@ -212,7 +227,7 @@ npx tsx scripts/run_sim3d.ts --serve --gemini
 | Port | Protocol | Direction | Purpose |
 |------|----------|-----------|---------|
 | 9090 | WebSocket | Bridge <-> Browser | Motor commands + camera frames + pose |
-| 4210 | UDP | RoClaw stack -> Bridge | 6-byte bytecode frames |
+| 4210 | UDP | RoClaw stack <-> Bridge | 6/8-byte bytecode frames + telemetry JSON (500ms push) |
 | 8081 | HTTP MJPEG | Bridge -> VisionLoop | First-person camera stream |
 | 8440 | HTTP | skillos bridge -> Tool server | Tool invocations via `--serve` mode |
 
@@ -349,8 +364,10 @@ RoClaw/
 │   │   ├── roclaw_tools.ts      #   Tool handlers (explore, go_to, stop)
 │   │   └── planner.ts           #   Hierarchical goal decomposition
 │   ├── 2_qwen_cerebellum/       # LLM 2: VLM Motor Controller
-│   │   ├── vision_loop.ts       #   Camera → VLM → bytecode → ESP32 cycle
-│   │   └── bytecode_compiler.ts #   VLM output → 6-byte binary frames
+│   │   ├── vision_loop.ts       #   Camera → VLM → bytecode → ESP32 cycle (STOP-before-infer)
+│   │   ├── bytecode_compiler.ts #   VLM output → 6/8-byte binary frames (V1 + V2)
+│   │   ├── udp_transmitter.ts   #   UDP transport with V2 ACK support
+│   │   └── telemetry_monitor.ts #   Telemetry parsing + stall detection
 │   ├── 3_llmunix_memory/        # RoClaw memory adapter layer
 │   │   ├── semantic_map.ts      #   VLM-powered topological graph
 │   │   ├── roclaw_dream_adapter.ts #  DreamDomainAdapter for robotics
@@ -380,7 +397,7 @@ The numbered folders encode the architecture:
 
 - **llmunix-core** — The cognitive core. Generic types, interfaces, and the `MemoryClient` that connects to evolving-memory's REST API. Zero robotics dependencies.
 1. **Cortex** — The slow thinker. Receives goals from OpenClaw, decomposes them into multi-step plans using the Hierarchical Planner and learned strategies.
-2. **Cerebellum** — The fast reactor. Sees camera frames via Gemini 3.1 Flash Lite, outputs constraint-aware bytecode motor commands at 2 FPS.
+2. **Cerebellum** — The fast reactor. Sees camera frames via Gemini 3.1 Flash Lite, outputs constraint-aware bytecode motor commands at 2 FPS. Sends STOP-before-inference to prevent coasting blind during VLM thinking. Monitors telemetry for stall detection.
 3. **LLMunix Memory** — The RoClaw adapter layer. Extends the core with robotics-specific behavior: bytecode entries, motor-specific prompts, the semantic map, and dream domain adapter.
 4. **Somatic Firmware** — The spinal cord. Bytecode-only UDP listener on ESP32-S3. MJPEG streamer on ESP32-CAM.
 5. **Hardware CAD** — The body. 3D-printable parts and assembly reference.

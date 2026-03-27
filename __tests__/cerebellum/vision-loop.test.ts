@@ -140,7 +140,8 @@ describe('VisionLoop', () => {
     expect(result!.length).toBe(6);
     expect(result![0]).toBe(0xAA);
     expect(result![1]).toBe(Opcode.STOP);
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    // 2 sends: STOP-before-inference + motor command
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
   test('processSingleFrame returns null on inference failure', async () => {
@@ -232,6 +233,100 @@ describe('VisionLoop', () => {
       'What do you see? Output the next motor command.',
       ['singleframe'],
     );
+  });
+
+  // ===========================================================================
+  // STOP-before-inference (Sense-Plan-Act synchronizer)
+  // ===========================================================================
+
+  test('processSingleFrame sends STOP frame BEFORE motor command', async () => {
+    const sendCalls: Buffer[] = [];
+    const mockSend = jest.fn().mockImplementation((frame: Buffer) => {
+      sendCalls.push(Buffer.from(frame));
+      return Promise.resolve();
+    });
+    (transmitter as any).connected = true;
+    (transmitter as any).socket = { send: jest.fn() };
+    transmitter.send = mockSend;
+
+    mockInfer.mockResolvedValue('FORWARD 128 128');
+
+    await visionLoop.processSingleFrame('base64imagedata');
+
+    // First send should be STOP (0x07), second should be FORWARD (0x01)
+    expect(sendCalls.length).toBeGreaterThanOrEqual(2);
+    expect(sendCalls[0][1]).toBe(Opcode.STOP);
+    expect(sendCalls[1][1]).toBe(Opcode.MOVE_FORWARD);
+  });
+
+  test('first transmitter.send() call has opcode 0x07 even when VLM outputs STOP', async () => {
+    const sendCalls: Buffer[] = [];
+    const mockSend = jest.fn().mockImplementation((frame: Buffer) => {
+      sendCalls.push(Buffer.from(frame));
+      return Promise.resolve();
+    });
+    (transmitter as any).connected = true;
+    (transmitter as any).socket = { send: jest.fn() };
+    transmitter.send = mockSend;
+
+    // VLM outputs STOP — there should STILL be a pre-inference STOP first
+    mockInfer.mockResolvedValue('AA 07 00 00 07 FF');
+
+    await visionLoop.processSingleFrame('base64imagedata');
+
+    expect(sendCalls.length).toBeGreaterThanOrEqual(2);
+    // Both are STOP opcode — but two separate send() calls
+    expect(sendCalls[0][1]).toBe(Opcode.STOP);
+    expect(sendCalls[1][1]).toBe(Opcode.STOP);
+  });
+
+  test('STOP settle time is configurable', async () => {
+    // Create loop with 0ms settle
+    const fastLoop = new VisionLoop(
+      { cameraUrl: 'http://127.0.0.1:80/stream', targetFPS: 2, stopSettleMs: 0 },
+      compiler,
+      transmitter,
+      mockInfer as InferenceFunction,
+    );
+
+    const mockSend = jest.fn().mockResolvedValue(undefined);
+    (transmitter as any).connected = true;
+    (transmitter as any).socket = { send: jest.fn() };
+    transmitter.send = mockSend;
+
+    mockInfer.mockResolvedValue('AA 07 00 00 07 FF');
+
+    const start = Date.now();
+    await fastLoop.processSingleFrame('base64imagedata');
+    const elapsed = Date.now() - start;
+
+    // With 0ms settle, should complete very fast (no artificial delay)
+    expect(elapsed).toBeLessThan(500);
+    fastLoop.stop();
+  });
+
+  test('STOP-before-inference continues when transmitter.send fails', async () => {
+    let callCount = 0;
+    const mockSend = jest.fn().mockImplementation((frame: Buffer) => {
+      callCount++;
+      if (callCount === 1) {
+        // First call (STOP-before-inference) fails
+        return Promise.reject(new Error('send failed'));
+      }
+      return Promise.resolve();
+    });
+    (transmitter as any).connected = true;
+    (transmitter as any).socket = { send: jest.fn() };
+    transmitter.send = mockSend;
+
+    mockInfer.mockResolvedValue('FORWARD 128 128');
+
+    // Should NOT throw — graceful degradation
+    const result = await visionLoop.processSingleFrame('base64imagedata');
+    expect(result).not.toBeNull();
+    // Inference still ran and motor command was sent
+    expect(mockInfer).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(2);
   });
 
   // ===========================================================================

@@ -4,7 +4,10 @@
  */
 
 import { bytecodeToCtrl, speedParamToRadS, MAX_WHEEL_RAD_S } from '../../src/mjswan_bridge';
-import { Opcode, type BytecodeFrame } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+import {
+  Opcode, encodeFrame, encodeFrameV2, decodeFrameAuto, ACK_FLAG,
+  type BytecodeFrame,
+} from '../../src/2_qwen_cerebellum/bytecode_compiler';
 
 describe('MAX_WHEEL_RAD_S constant', () => {
   it('equals (1024/4096) * 2 * PI ~= 1.5708', () => {
@@ -162,6 +165,29 @@ describe('bytecodeToCtrl', () => {
       expect(left).toBeGreaterThan(0);
       expect(left).toBeLessThan(0.01);
       expect(right).toBeGreaterThan(0);
+    });
+  });
+
+  describe('V2 frame auto-detection for bridge', () => {
+    it('decodeFrameAuto handles V1 frame for bytecodeToCtrl', () => {
+      const v1 = encodeFrame({ opcode: Opcode.MOVE_FORWARD, paramLeft: 128, paramRight: 128 });
+      const decoded = decodeFrameAuto(v1);
+      expect(decoded).not.toBeNull();
+      const [left, right] = bytecodeToCtrl(decoded!);
+      expect(left).toBeCloseTo(speedParamToRadS(128), 6);
+      expect(right).toBeCloseTo(speedParamToRadS(128), 6);
+    });
+
+    it('decodeFrameAuto handles V2 frame for bytecodeToCtrl', () => {
+      const v2 = encodeFrameV2({
+        opcode: Opcode.MOVE_FORWARD, paramLeft: 200, paramRight: 200,
+        sequenceNumber: 42, flags: ACK_FLAG,
+      });
+      const decoded = decodeFrameAuto(v2);
+      expect(decoded).not.toBeNull();
+      const [left, right] = bytecodeToCtrl(decoded!);
+      expect(left).toBeCloseTo(speedParamToRadS(200), 6);
+      expect(right).toBeCloseTo(speedParamToRadS(200), 6);
     });
   });
 });

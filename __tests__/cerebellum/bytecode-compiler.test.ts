@@ -5,9 +5,16 @@ import {
   FRAME_START,
   FRAME_END,
   FRAME_SIZE,
+  FRAME_SIZE_V2,
+  ACK_FLAG,
+  ACK_OPCODE,
   calculateChecksum,
+  calculateChecksumV2,
   encodeFrame,
   decodeFrame,
+  encodeFrameV2,
+  decodeFrameV2,
+  decodeFrameAuto,
   formatHex,
 } from '../../src/2_qwen_cerebellum/bytecode_compiler';
 
@@ -131,8 +138,8 @@ describe('BytecodeCompiler', () => {
       expect(decoded!.opcode).toBe(value);
     });
 
-    test('13 opcodes defined', () => {
-      expect(opcodeEntries.length).toBe(13);
+    test('14 opcodes defined (13 original + ACK)', () => {
+      expect(opcodeEntries.length).toBe(14);
     });
   });
 
@@ -473,6 +480,106 @@ describe('BytecodeCompiler', () => {
   // ===========================================================================
   // System prompt
   // ===========================================================================
+
+  // ===========================================================================
+  // ISA v1.1 — V2 Frame Format
+  // ===========================================================================
+
+  describe('V2 frame encoding/decoding', () => {
+    test('encodeFrameV2 produces 8-byte buffer with correct markers', () => {
+      const buf = encodeFrameV2({
+        opcode: Opcode.MOVE_FORWARD, paramLeft: 128, paramRight: 128,
+        sequenceNumber: 42, flags: 0,
+      });
+      expect(buf.length).toBe(FRAME_SIZE_V2);
+      expect(buf[0]).toBe(FRAME_START);
+      expect(buf[7]).toBe(FRAME_END);
+      expect(buf[1]).toBe(42); // SEQ
+      expect(buf[2]).toBe(Opcode.MOVE_FORWARD);
+      expect(buf[3]).toBe(128);
+      expect(buf[4]).toBe(128);
+      expect(buf[5]).toBe(0); // FLAGS
+    });
+
+    test('V2 checksum is XOR of bytes 1-5', () => {
+      const cs = calculateChecksumV2(42, 0x01, 128, 128, 0);
+      // 42 ^ 0x01 ^ 128 ^ 128 ^ 0 = 42 ^ 1 = 43
+      expect(cs).toBe(42 ^ 0x01 ^ 128 ^ 128 ^ 0);
+    });
+
+    test('decodeFrameV2 round-trips correctly', () => {
+      const original = {
+        opcode: Opcode.ROTATE_CW, paramLeft: 90, paramRight: 128,
+        sequenceNumber: 200, flags: ACK_FLAG,
+      };
+      const buf = encodeFrameV2(original);
+      const decoded = decodeFrameV2(buf);
+      expect(decoded).not.toBeNull();
+      expect(decoded!.opcode).toBe(Opcode.ROTATE_CW);
+      expect(decoded!.paramLeft).toBe(90);
+      expect(decoded!.paramRight).toBe(128);
+      expect(decoded!.sequenceNumber).toBe(200);
+      expect(decoded!.flags).toBe(ACK_FLAG);
+    });
+
+    test('decodeFrameV2 returns null for bad checksum', () => {
+      // correct checksum for seq=1,op=1,pl=80,pr=80,flags=0 is 0x00
+      // set checksum to 0xFF to make it invalid
+      const buf = Buffer.from([0xAA, 0x01, 0x01, 0x80, 0x80, 0x00, 0xFF, 0xFF]);
+      expect(decodeFrameV2(buf)).toBeNull();
+    });
+
+    test('decodeFrameV2 returns null for too-short buffer', () => {
+      expect(decodeFrameV2(Buffer.from([0xAA, 0x01, 0x01]))).toBeNull();
+    });
+
+    test('ACK frame encodes/decodes correctly', () => {
+      const ackFrame = encodeFrameV2({
+        opcode: ACK_OPCODE, paramLeft: 0, paramRight: 0,
+        sequenceNumber: 99, flags: 0,
+      });
+      const decoded = decodeFrameV2(ackFrame);
+      expect(decoded).not.toBeNull();
+      expect(decoded!.opcode).toBe(ACK_OPCODE);
+      expect(decoded!.sequenceNumber).toBe(99);
+    });
+
+    test('sequence number wraps at 255', () => {
+      const frame = encodeFrameV2({
+        opcode: Opcode.STOP, paramLeft: 0, paramRight: 0,
+        sequenceNumber: 255, flags: 0,
+      });
+      const decoded = decodeFrameV2(frame);
+      expect(decoded!.sequenceNumber).toBe(255);
+    });
+  });
+
+  describe('decodeFrameAuto', () => {
+    test('auto-detects V1 6-byte frame', () => {
+      const v1 = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+      const result = decodeFrameAuto(v1);
+      expect(result).not.toBeNull();
+      expect(result!.opcode).toBe(Opcode.STOP);
+      expect(result!.sequenceNumber).toBe(0);
+      expect(result!.flags).toBe(0);
+    });
+
+    test('auto-detects V2 8-byte frame', () => {
+      const v2 = encodeFrameV2({
+        opcode: Opcode.MOVE_FORWARD, paramLeft: 100, paramRight: 100,
+        sequenceNumber: 7, flags: ACK_FLAG,
+      });
+      const result = decodeFrameAuto(v2);
+      expect(result).not.toBeNull();
+      expect(result!.opcode).toBe(Opcode.MOVE_FORWARD);
+      expect(result!.sequenceNumber).toBe(7);
+      expect(result!.flags).toBe(ACK_FLAG);
+    });
+
+    test('returns null for invalid buffer', () => {
+      expect(decodeFrameAuto(Buffer.from([0x00, 0x01]))).toBeNull();
+    });
+  });
 
   describe('getSystemPrompt', () => {
     test('includes the goal', () => {

@@ -550,6 +550,105 @@ CRITICAL: Analyze each frame carefully. If the target is visible, navigate towar
  * GBNF grammar that forces the VLM to output exactly 6 hex bytes.
  * Use with llama.cpp or compatible servers that support grammar-constrained decoding.
  */
+// =============================================================================
+// ISA v1.1 — V2 Frame Format (8 bytes with sequence numbers + ACK)
+// =============================================================================
+
+export const FRAME_SIZE_V2 = 8;
+export const ACK_FLAG = 0x01;
+export const ACK_OPCODE = 0xFD;
+
+// Add ACK to Opcode and OPCODE_NAMES (done via module augmentation below)
+(Opcode as any).ACK = ACK_OPCODE;
+(OPCODE_NAMES as any)[ACK_OPCODE] = 'ACK';
+
+/**
+ * V2 frame extends V1 with sequence number and flags.
+ * Frame: [0xAA][SEQ][OPCODE][PARAM_L][PARAM_R][FLAGS][CHECKSUM][0xFF]
+ *   0     1     2       3        4       5       6        7
+ */
+export interface BytecodeFrameV2 extends BytecodeFrame {
+  sequenceNumber: number;  // 0-255, wrapping
+  flags: number;           // bit 0 = ACK_REQUESTED
+}
+
+/**
+ * Calculate checksum for a V2 frame (XOR of bytes 1-5).
+ */
+export function calculateChecksumV2(
+  seq: number, opcode: number, paramLeft: number, paramRight: number, flags: number,
+): number {
+  return (seq ^ opcode ^ paramLeft ^ paramRight ^ flags) & 0xFF;
+}
+
+/**
+ * Encode a V2 frame into an 8-byte Buffer.
+ */
+export function encodeFrameV2(frame: BytecodeFrameV2): Buffer {
+  const seq = frame.sequenceNumber & 0xFF;
+  const flags = frame.flags & 0xFF;
+  const checksum = calculateChecksumV2(seq, frame.opcode, frame.paramLeft, frame.paramRight, flags);
+  return Buffer.from([
+    FRAME_START,
+    seq,
+    frame.opcode & 0xFF,
+    frame.paramLeft & 0xFF,
+    frame.paramRight & 0xFF,
+    flags,
+    checksum,
+    FRAME_END,
+  ]);
+}
+
+/**
+ * Decode an 8-byte V2 frame Buffer into a BytecodeFrameV2.
+ * Returns null if the buffer is invalid (wrong markers or checksum).
+ */
+export function decodeFrameV2(buffer: Buffer): BytecodeFrameV2 | null {
+  if (buffer.length < FRAME_SIZE_V2) return null;
+  if (buffer[0] !== FRAME_START || buffer[7] !== FRAME_END) return null;
+
+  const seq = buffer[1];
+  const opcode = buffer[2];
+  const paramLeft = buffer[3];
+  const paramRight = buffer[4];
+  const flags = buffer[5];
+  const expectedChecksum = calculateChecksumV2(seq, opcode, paramLeft, paramRight, flags);
+
+  if (buffer[6] !== expectedChecksum) return null;
+
+  return { opcode, paramLeft, paramRight, sequenceNumber: seq, flags };
+}
+
+/**
+ * Auto-detect and decode either a V1 (6-byte) or V2 (8-byte) frame.
+ * Returns a BytecodeFrameV2 in both cases (V1 frames get seq=0, flags=0).
+ */
+export function decodeFrameAuto(buffer: Buffer): BytecodeFrameV2 | null {
+  if (buffer.length === FRAME_SIZE_V2) {
+    const v2 = decodeFrameV2(buffer);
+    if (v2) return v2;
+  }
+  if (buffer.length === FRAME_SIZE) {
+    const v1 = decodeFrame(buffer);
+    if (v1) return { ...v1, sequenceNumber: 0, flags: 0 };
+  }
+  // Try V2 first for buffers of other sizes, then V1
+  if (buffer.length >= FRAME_SIZE_V2) {
+    const v2 = decodeFrameV2(buffer);
+    if (v2) return v2;
+  }
+  if (buffer.length >= FRAME_SIZE) {
+    const v1 = decodeFrame(buffer);
+    if (v1) return { ...v1, sequenceNumber: 0, flags: 0 };
+  }
+  return null;
+}
+
+// =============================================================================
+// GBNF Grammar (for grammar-constrained decoding)
+// =============================================================================
+
 export const BYTECODE_GBNF_GRAMMAR = `root ::= hex-byte " " hex-byte " " hex-byte " " hex-byte " " hex-byte " " hex-byte
 hex-byte ::= hex-digit hex-digit
 hex-digit ::= [0-9A-Fa-f]`;
