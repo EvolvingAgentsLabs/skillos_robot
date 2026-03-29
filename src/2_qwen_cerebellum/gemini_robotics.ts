@@ -297,8 +297,12 @@ export class GeminiRoboticsInference {
       },
     };
 
-    // Only send thinkingConfig when budget > 0 (flash-lite may not support thinking API)
-    if (this.config.thinkingBudget > 0) {
+    // Send thinkingConfig to control thinking behavior.
+    // Models like gemini-2.5-flash think by default and can exhaust maxOutputTokens
+    // on internal reasoning. Explicitly set budget=0 to disable thinking for motor control.
+    // Skip only for flash-lite models that don't support the thinking API.
+    const isLiteModel = this.config.model.includes('lite');
+    if (this.config.thinkingBudget > 0 || !isLiteModel) {
       (body.generationConfig as Record<string, unknown>).thinkingConfig = {
         thinkingBudget: this.config.thinkingBudget,
       };
@@ -380,8 +384,27 @@ export class GeminiRoboticsInference {
         throw new Error('No text or function call in Gemini response');
       }
 
+      let content = textPart.text;
+
+      // Gemini 2.x models may return tool calls as Python code:
+      //   "tool_code\nprint(default_api.move_forward(speed_l=200, speed_r=200))"
+      // Parse and convert to TOOLCALL format for the bytecode compiler.
+      const pyCallMatch = content.match(/default_api\.(\w+)\(([^)]*)\)/);
+      if (pyCallMatch) {
+        const fnName = pyCallMatch[1];
+        const argsStr = pyCallMatch[2];
+        const args: Record<string, unknown> = {};
+        for (const pair of argsStr.split(',')) {
+          const [key, val] = pair.split('=').map(s => s.trim());
+          if (key && val !== undefined) {
+            args[key] = isNaN(Number(val)) ? val : Number(val);
+          }
+        }
+        content = `TOOLCALL:${JSON.stringify({ name: fnName, args })}`;
+      }
+
       return {
-        content: textPart.text,
+        content,
         usage: {
           promptTokens: data.usageMetadata?.promptTokenCount,
           completionTokens: data.usageMetadata?.candidatesTokenCount,
