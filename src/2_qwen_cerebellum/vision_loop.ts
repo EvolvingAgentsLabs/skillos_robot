@@ -37,6 +37,10 @@ export interface VisionLoopConfig {
   useToolCallingPrompt?: boolean;
   /** ms to wait after STOP before inference (default: 100). Set to 0 to skip settle delay. */
   stopSettleMs?: number;
+  /** Skip STOP-before-inference entirely — let the previous command keep running while VLM thinks.
+   *  Useful when inference is slow (2s+) and stopping between every frame prevents movement.
+   *  The heartbeat keeps ESP32 alive, and frame history captures motion for temporal context. */
+  coastDuringInference?: boolean;
 }
 
 export interface VisionLoopStats {
@@ -532,7 +536,9 @@ export class VisionLoop extends EventEmitter {
 
   private async processFrame(jpegData: Buffer): Promise<void> {
     this.processingFrame = true;
-    await this.stopAndSettle();
+    if (!this.config.coastDuringInference) {
+      await this.stopAndSettle();
+    }
     this.startInferenceHeartbeat();
 
     try {

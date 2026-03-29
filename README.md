@@ -180,30 +180,49 @@ The system can dream rapidly with text-based simulations, generating many low-co
 
 ## Distillation Pipeline (RoClaw-Distill)
 
-RoClaw includes a complete pipeline for distilling navigation knowledge from a large teacher model (Gemini) into a small, locally-runnable student model (Qwen3-VL-2B via Ollama). The Cognitive ISA becomes the training language — the student learns to "speak" TOOLCALL motor commands from text scene descriptions.
+RoClaw includes a complete pipeline for distilling navigation knowledge from a large teacher model (Gemini) into a small, locally-runnable student model (Qwen3-VL-2B via Ollama). The Cognitive ISA becomes the training language — the student learns to "speak" TOOLCALL motor commands from camera observations.
 
 ### How It Works
 
 ```
-1. Generate → ScenarioGenerator creates randomized arenas (easy/medium/hard)
-2. Simulate → DreamScenarioRunner runs Gemini through text-only navigation
-3. Capture  → TracePoster sends traces to evolving-memory server
-4. Dream    → Dream Engine consolidates strategies + constraints
+1. Navigate → Run 3D sim with --post-traces: Gemini sees camera, issues motor commands
+2. Capture  → Sim3DTraceCollector posts frame-by-frame traces to evolving-memory
+3. Dream    → Dream Engine consolidates strategies + constraints
+4. Describe → --describe-scene asks VLM to narrate what it sees (gap analysis)
 5. Export   → /export/training-data → JSONL in Qwen3-VL chat format
 6. Train    → Unsloth LoRA fine-tuning on Google Colab
 7. Deploy   → Ollama serves the GGUF model locally
 8. Verify   → Benchmark against the Gemini teacher
 ```
 
-### Running the Flywheel
+### Camera-Based Trace Capture (Validated)
+
+The 3D simulation captures real VLM navigation traces with `--post-traces`. Tested end-to-end: robot navigated 2.55m → 0.41m toward a red cube, trace posted, dream consolidation created new knowledge nodes.
 
 ```bash
 # Start the evolving-memory server
 cd ../evolving-memory
 GEMINI_API_KEY=<key> PYTHONPATH=src python3.12 -m evolving_memory.server --llm gemini --port 8420
 
-# Run 200 randomized scenarios with periodic dream consolidation
-cd ../RoClaw
+# Start 3D sim stack (scene + bridge + browser)
+cd ../RoClaw/sim && python build_scene.py     # serves :8000
+cd ../RoClaw && npm run sim:3d                # :9090 WS, :4210 UDP, :8081 MJPEG
+open http://localhost:8000?bridge=ws://localhost:9090
+
+# Run with trace capture + scene description for gap analysis
+npx tsx scripts/run_sim3d.ts --gemini --post-traces --describe-scene --goal "navigate to the red cube"
+```
+
+### Gap Analysis: Camera vs Text-Only
+
+The `--describe-scene` flag asks the VLM to describe each camera frame as text, revealing what information the model uses for motor decisions. Key finding: **the model uses visual composition** (object position in frame, relative size, occlusion) rather than absolute coordinates. Text-only spatial descriptions with explicit distances failed across all Gemini models.
+
+### Text-Based Flywheel (Scenario Generator)
+
+For bulk data generation with randomized arenas:
+
+```bash
+# Run 200 randomized text-only scenarios with periodic dream consolidation
 npx tsx scripts/distill_flywheel.ts --count 200 --batch-size 20 --text-model gemini-3.1-flash-lite-preview
 
 # Export training data
