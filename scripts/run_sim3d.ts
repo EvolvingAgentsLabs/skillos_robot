@@ -32,8 +32,9 @@ import { CerebellumInference } from '../src/2_qwen_cerebellum/inference';
 import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/2_qwen_cerebellum/gemini_robotics';
 import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_tools';
 import { MemoryClient } from '../src/llmunix-core/memory_client';
-import { TraceSource } from '../src/llmunix-core/types';
+import { TraceSource, TraceOutcome } from '../src/llmunix-core/types';
 import { TelemetryMonitor } from '../src/2_qwen_cerebellum/telemetry_monitor';
+import { Sim3DTraceCollector } from '../src/3_llmunix_memory/sim3d_trace_collector';
 
 dotenv.config();
 
@@ -66,6 +67,9 @@ let useOllama = false;
 let ollamaModelName = 'roclaw-nav:q8_0';
 let serveMode = false;
 let servePort = 8440;
+let postTraces = false;
+let describeScene = false;
+let memoryServerUrl = process.env.MEMORY_SERVER_URL || 'http://localhost:8420';
 
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -100,6 +104,15 @@ for (let i = 0; i < args.length; i++) {
     case '--serve-port':
       servePort = parseInt(args[++i] || '8440', 10);
       break;
+    case '--post-traces':
+      postTraces = true;
+      break;
+    case '--describe-scene':
+      describeScene = true;
+      break;
+    case '--memory-server':
+      memoryServerUrl = args[++i] || memoryServerUrl;
+      break;
     case '--help':
       console.log(`Usage: npx tsx scripts/run_sim3d.ts [options]
 
@@ -114,6 +127,9 @@ Options:
   --ollama-model <name> Ollama model name (default: roclaw-nav:q8_0)
   --serve               Start HTTP tool server instead of running a single goal
   --serve-port <port>   Port for the HTTP tool server (default: 8440)
+  --post-traces         Post navigation traces to evolving-memory server
+  --describe-scene      Ask VLM to describe camera scenes as text (gap analysis)
+  --memory-server <url> evolving-memory server URL (default: http://localhost:8420)
   --help                Show this help message
 
 Examples:
@@ -126,6 +142,8 @@ Examples:
   npx tsx scripts/run_sim3d.ts --ollama --ollama-model roclaw-nav:q4km --goal "the red cube"
   npx tsx scripts/run_sim3d.ts --serve --gemini  # Tool server on :8440
   npx tsx scripts/run_sim3d.ts --serve --serve-port 9000 --gemini
+  # Post traces to evolving-memory + describe what the VLM sees:
+  npx tsx scripts/run_sim3d.ts --gemini --post-traces --describe-scene --goal "find the red cube"
 `);
       process.exit(0);
   }
@@ -148,7 +166,6 @@ if (mode === 'go_to' && !goal) {
 // =============================================================================
 
 async function runDreamConsolidation(): Promise<void> {
-  const memoryServerUrl = process.env.MEMORY_SERVER_URL || 'http://localhost:8420';
   const client = new MemoryClient(memoryServerUrl);
 
   try {
@@ -176,6 +193,8 @@ async function main(): Promise<void> {
   }
   if (constraints) logger.info('Sim3D', `Constraints: "${constraints}"`);
   if (dreamOnShutdown) logger.info('Sim3D', 'Dream consolidation enabled on shutdown');
+  if (postTraces) logger.info('Sim3D', `Trace posting enabled → ${memoryServerUrl}`);
+  if (describeScene) logger.info('Sim3D', 'Scene description enabled (gap analysis)');
 
   // 1. Compiler
   const compiler = new BytecodeCompiler('fewshot');
@@ -205,7 +224,7 @@ async function main(): Promise<void> {
       logger.error('Sim3D', 'GOOGLE_API_KEY required for --gemini mode');
       process.exit(1);
     }
-    const geminiModel = process.env.GEMINI_MODEL || 'gemini-robotics-er-1.5-preview';
+    const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
     const thinkingBudget = parseInt(process.env.GEMINI_THINKING_BUDGET || '0', 10);
     const gemini = new GeminiRoboticsInference({
       apiKey: googleApiKey,
@@ -226,9 +245,11 @@ async function main(): Promise<void> {
   }
 
   // 4. Vision loop -> bridge MJPEG stream
+  //    coastDuringInference: let previous motor command keep running while VLM thinks (~2s).
+  //    Without this, STOP-before-inference cancels all movement between frames.
   const cameraUrl = `http://${config.cameraHost}:${config.cameraPort}${config.cameraPath}`;
   const visionLoop = new VisionLoop(
-    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: useGemini },
+    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: useGemini, coastDuringInference: true },
     compiler,
     transmitter,
     infer,
@@ -260,6 +281,58 @@ async function main(): Promise<void> {
   transmitter.onMessage((msg) => {
     telemetryMonitor.processMessage(msg);
   });
+
+  // 5b. Trace collector — captures camera-based traces for evolving-memory
+  let traceCollector: Sim3DTraceCollector | null = null;
+  if (postTraces) {
+    traceCollector = new Sim3DTraceCollector({
+      serverUrl: memoryServerUrl,
+      describeScene,
+    });
+    if (describeScene) {
+      traceCollector.setInferenceFunction(infer);
+    }
+  }
+
+  // 5c. Scene description loop — periodically asks VLM to describe what it sees as text
+  //     This runs alongside navigation for gap analysis between camera and text-only input.
+  let sceneDescriptionLog: Array<{ timestamp: number; frameIndex: number; description: string; vlmOutput: string }> = [];
+  let describeFrameCount = 0;
+  const DESCRIBE_EVERY_N = 5; // Describe every 5th frame to avoid excessive API calls
+
+  if (describeScene && infer) {
+    visionLoop.on('bytecode', async (_bytecode: Buffer, vlmOutput: string) => {
+      describeFrameCount++;
+      if (describeFrameCount % DESCRIBE_EVERY_N !== 0) return;
+
+      const latestFrame = visionLoop.getLatestFrameBase64();
+      if (!latestFrame) return;
+
+      try {
+        const description = await infer(
+          'You are a robot scene analyst. Describe exactly what you see in this camera frame. ' +
+          'Include: all visible objects (color, shape, approximate size and distance), ' +
+          'spatial layout (what is to the left, right, center, near, far), ' +
+          'any obstacles or walls, open paths for navigation, and the floor/ground texture. ' +
+          'Be precise about relative positions and estimated distances in centimeters. ' +
+          'Output ONLY the scene description as plain text. Do NOT output any motor commands.',
+          'Describe this scene in detail for a text-based robot navigation system.',
+          [latestFrame],
+        );
+        sceneDescriptionLog.push({
+          timestamp: Date.now(),
+          frameIndex: describeFrameCount,
+          description,
+          vlmOutput,
+        });
+        logger.info('Describe', `Frame #${describeFrameCount}: ${description.slice(0, 120)}...`);
+      } catch (err) {
+        logger.warn('Describe', `Failed at frame #${describeFrameCount}`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  }
 
   // 6. Build ToolContext and dispatch via handleTool
   //    Tag traces as SIM_3D: physics-based simulation with rendered frames + real VLM
@@ -447,6 +520,17 @@ async function main(): Promise<void> {
     process.on('SIGTERM', () => { goalPollStopped = true; if (goalPollInterval) clearInterval(goalPollInterval); });
   }
 
+  // Attach trace collector before navigation starts
+  if (traceCollector) {
+    const traceGoal = mode === 'go_to' ? goal : 'explore and avoid obstacles';
+    traceCollector.attach(visionLoop, traceGoal);
+
+    // Also track physics-confirmed arrival in the collector
+    visionLoop.on('arrival', (reason: string) => {
+      traceCollector?.setOutcome(TraceOutcome.SUCCESS, typeof reason === 'string' ? reason : 'Arrival');
+    });
+  }
+
   logger.info('Sim3D', `Starting full cognitive stack: ${cameraUrl}`);
 
   let result;
@@ -462,13 +546,48 @@ async function main(): Promise<void> {
   logger.info('Sim3D', `handleTool result: ${result.message}`);
   logger.info('Sim3D', 'Cycle: 3D render -> MJPEG -> VLM -> bytecode -> UDP -> bridge -> MuJoCo physics');
 
-  // 7. Graceful shutdown
+  // 7. Post traces + scene analysis helper
+  async function postCollectedTraces(): Promise<void> {
+    if (!traceCollector) return;
+
+    traceCollector.detach(visionLoop);
+    const summary = traceCollector.getSummary();
+    logger.info('Sim3D', `Trace collection: ${summary.frames} frames, outcome=${summary.outcome}, ${summary.durationMs}ms`);
+
+    try {
+      const response = await traceCollector.postTrace();
+      if (response) {
+        logger.info('Sim3D', `Trace posted: ${response.trace_id} (session ${response.session_id})`);
+      }
+    } catch (err) {
+      logger.error('Sim3D', 'Failed to post trace', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Print scene description gap analysis if enabled
+    if (describeScene && sceneDescriptionLog.length > 0) {
+      logger.info('Describe', `\n${'='.repeat(60)}`);
+      logger.info('Describe', 'SCENE DESCRIPTION GAP ANALYSIS');
+      logger.info('Describe', `${'='.repeat(60)}`);
+      logger.info('Describe', `Collected ${sceneDescriptionLog.length} scene descriptions`);
+      for (const entry of sceneDescriptionLog) {
+        logger.info('Describe', `\n--- Frame #${entry.frameIndex} ---`);
+        logger.info('Describe', `VLM motor output: ${entry.vlmOutput}`);
+        logger.info('Describe', `Scene description: ${entry.description}`);
+      }
+      logger.info('Describe', `${'='.repeat(60)}\n`);
+    }
+  }
+
+  // 8. Graceful shutdown
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info('Sim3D', 'Shutting down...');
     await handleTool('robot.stop', {}, ctx);
+    await postCollectedTraces();
     if (dreamOnShutdown) await runDreamConsolidation();
     await transmitter.disconnect();
     process.exit(0);
@@ -477,7 +596,7 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  // 8. For go_to + dream: wait for navigation to complete, then dream and exit
+  // 9. For go_to + dream: wait for navigation to complete, then post traces + dream and exit
   if (mode === 'go_to' && dreamOnShutdown) {
     await new Promise<void>((resolve) => {
       const check = setInterval(() => {
@@ -487,7 +606,9 @@ async function main(): Promise<void> {
         }
       }, 1000);
     });
-    logger.info('Sim3D', 'Navigation completed, running dream consolidation...');
+    logger.info('Sim3D', 'Navigation completed');
+    await postCollectedTraces();
+    logger.info('Sim3D', 'Running dream consolidation...');
     await runDreamConsolidation();
     await transmitter.disconnect();
     process.exit(0);
