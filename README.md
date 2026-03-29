@@ -248,7 +248,7 @@ RoClaw uses **Gemini 3.1 Flash Lite** (`gemini-3.1-flash-lite-preview`) as the d
 npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
 
 # Override model via .env
-GEMINI_MODEL=gemini-2.5-flash  # or gemini-robotics-er-1.5-preview
+GEMINI_MODEL=gemini-3.1-flash-lite-preview  # or gemini-3-flash-preview
 ```
 
 Also supports Qwen-VL via OpenRouter and local inference as alternatives. See [docs/08-Gemini-Robotics-Integration.md](docs/08-Gemini-Robotics-Integration.md) for the integration report.
