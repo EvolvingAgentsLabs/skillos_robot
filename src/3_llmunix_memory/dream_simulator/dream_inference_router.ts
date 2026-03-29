@@ -15,12 +15,11 @@ import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../../2_qwen_
 // Types
 // =============================================================================
 
-/** Kept for backward compatibility — only 'gemini' is active */
-export type DreamInferenceMode = 'gemini';
+export type DreamInferenceMode = 'gemini' | 'ollama';
 
 export interface DreamInferenceRouterConfig {
   mode?: DreamInferenceMode;
-  /** Google API key for Gemini (required) */
+  /** Google API key for Gemini (required when mode='gemini') */
   googleApiKey?: string;
   /** Gemini model for image-based inference (robotics-er) */
   geminiModel?: string;
@@ -32,6 +31,10 @@ export interface DreamInferenceRouterConfig {
   temperature?: number;
   /** Timeout in ms (default: 15000) */
   timeoutMs?: number;
+  /** Ollama API base URL (default: http://localhost:11434) */
+  ollamaUrl?: string;
+  /** Ollama model name (default: roclaw-nav:q8_0) */
+  ollamaModel?: string;
 }
 
 export interface InferenceStats {
@@ -48,6 +51,7 @@ export interface InferenceStats {
 export class DreamInferenceRouter {
   private textInfer: InferenceFunction;
   private imageInfer: InferenceFunction;
+  private activeMode: DreamInferenceMode;
   private stats: InferenceStats = {
     totalCalls: 0,
     geminiCalls: 0,
@@ -57,34 +61,50 @@ export class DreamInferenceRouter {
   private totalLatencyMs: number = 0;
 
   constructor(config: DreamInferenceRouterConfig) {
-    const googleKey = config.googleApiKey || process.env.GOOGLE_API_KEY || '';
-    if (!googleKey) {
-      throw new Error('Dream inference requires GOOGLE_API_KEY (Gemini Robotics backend)');
+    this.activeMode = config.mode ?? 'gemini';
+
+    if (this.activeMode === 'ollama') {
+      // Lazy-import to avoid requiring ollama_inference when using gemini
+      const { OllamaInference } = require('../../2_qwen_cerebellum/ollama_inference');
+      const ollama = new OllamaInference({
+        baseUrl: config.ollamaUrl,
+        model: config.ollamaModel ?? 'roclaw-nav:q8_0',
+        temperature: config.temperature ?? 0.1,
+        maxTokens: config.maxTokens ?? 128,
+        timeoutMs: config.timeoutMs ?? 15000,
+      });
+      this.textInfer = ollama.createInferenceFunction();
+      this.imageInfer = ollama.createInferenceFunction(); // Ollama doesn't support images, but keeps interface consistent
+    } else {
+      const googleKey = config.googleApiKey || process.env.GOOGLE_API_KEY || '';
+      if (!googleKey) {
+        throw new Error('Dream inference requires GOOGLE_API_KEY (Gemini Robotics backend)');
+      }
+
+      const imageModel = config.geminiModel ?? process.env.GEMINI_MODEL ?? 'gemini-3-flash-preview';
+      const textModel = config.textModel ?? imageModel;
+
+      const sharedConfig = {
+        apiKey: googleKey,
+        maxOutputTokens: config.maxTokens ?? 512,
+        temperature: config.temperature ?? 0.1,
+        timeoutMs: config.timeoutMs ?? 15000,
+        thinkingBudget: 0, // Fast motor control, no deep thinking
+        useToolCalling: true,
+        tools: ROCLAW_TOOL_DECLARATIONS,
+      };
+
+      const textBackend = new GeminiRoboticsInference({ ...sharedConfig, model: textModel });
+      const imageBackend = new GeminiRoboticsInference({ ...sharedConfig, model: imageModel });
+
+      this.textInfer = textBackend.createInferenceFunction();
+      this.imageInfer = imageBackend.createInferenceFunction();
     }
-
-    const imageModel = config.geminiModel ?? process.env.GEMINI_MODEL ?? 'gemini-3-flash-preview';
-    const textModel = config.textModel ?? imageModel;
-
-    const sharedConfig = {
-      apiKey: googleKey,
-      maxOutputTokens: config.maxTokens ?? 512,
-      temperature: config.temperature ?? 0.1,
-      timeoutMs: config.timeoutMs ?? 15000,
-      thinkingBudget: 0, // Fast motor control, no deep thinking
-      useToolCalling: true,
-      tools: ROCLAW_TOOL_DECLARATIONS,
-    };
-
-    const textBackend = new GeminiRoboticsInference({ ...sharedConfig, model: textModel });
-    const imageBackend = new GeminiRoboticsInference({ ...sharedConfig, model: imageModel });
-
-    this.textInfer = textBackend.createInferenceFunction();
-    this.imageInfer = imageBackend.createInferenceFunction();
   }
 
   /** Get the active inference mode */
   getMode(): DreamInferenceMode {
-    return 'gemini';
+    return this.activeMode;
   }
 
   /** Get inference statistics */

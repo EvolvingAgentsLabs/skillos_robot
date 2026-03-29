@@ -61,6 +61,7 @@ export class UDPTransmitter {
   private latencies: number[] = [];
   private sequenceNumber = 0;
   private droppedFrames = 0;
+  private _pendingMessageCb: ((msg: Buffer, rinfo: dgram.RemoteInfo) => void) | null = null;
   private stats = {
     framesSent: 0,
     bytesTransmitted: 0,
@@ -90,6 +91,10 @@ export class UDPTransmitter {
 
       this.socket.bind(() => {
         this.connected = true;
+        if (this._pendingMessageCb) {
+          this.socket!.on('message', this._pendingMessageCb);
+          this._pendingMessageCb = null;
+        }
         logger.info('UDP', `Connected → ${this.config.host}:${this.config.port}`);
         resolve();
       });
@@ -229,6 +234,19 @@ export class UDPTransmitter {
         reject(err);
       });
     });
+  }
+
+  /**
+   * Register a callback for incoming UDP messages on this socket.
+   * If the socket is already connected, the callback is applied immediately.
+   * Otherwise it is deferred until connect() completes.
+   */
+  onMessage(cb: (msg: Buffer, rinfo: dgram.RemoteInfo) => void): void {
+    if (this.socket) {
+      this.socket.on('message', cb);
+    } else {
+      this._pendingMessageCb = cb;
+    }
   }
 
   isConnected(): boolean {

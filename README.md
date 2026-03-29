@@ -178,6 +178,67 @@ The system can dream rapidly with text-based simulations, generating many low-co
 
 ---
 
+## Distillation Pipeline (RoClaw-Distill)
+
+RoClaw includes a complete pipeline for distilling navigation knowledge from a large teacher model (Gemini) into a small, locally-runnable student model (Qwen3-VL-2B via Ollama). The Cognitive ISA becomes the training language — the student learns to "speak" TOOLCALL motor commands from text scene descriptions.
+
+### How It Works
+
+```
+1. Generate → ScenarioGenerator creates randomized arenas (easy/medium/hard)
+2. Simulate → DreamScenarioRunner runs Gemini through text-only navigation
+3. Capture  → TracePoster sends traces to evolving-memory server
+4. Dream    → Dream Engine consolidates strategies + constraints
+5. Export   → /export/training-data → JSONL in Qwen3-VL chat format
+6. Train    → Unsloth LoRA fine-tuning on Google Colab
+7. Deploy   → Ollama serves the GGUF model locally
+8. Verify   → Benchmark against the Gemini teacher
+```
+
+### Running the Flywheel
+
+```bash
+# Start the evolving-memory server
+cd ../evolving-memory
+GEMINI_API_KEY=<key> PYTHONPATH=src python3.12 -m evolving_memory.server --llm gemini --port 8420
+
+# Run 200 randomized scenarios with periodic dream consolidation
+cd ../RoClaw
+npx tsx scripts/distill_flywheel.ts --count 200 --batch-size 20 --text-model gemini-3.1-flash-lite-preview
+
+# Export training data
+curl http://localhost:8420/export/training-data?outcome=success > training_data.jsonl
+```
+
+### Scenario Generator
+
+`ScenarioGenerator` creates randomized navigation scenarios with three difficulty tiers:
+
+| Tier | Layout | Obstacles | Typical Frames |
+|------|--------|-----------|----------------|
+| **Easy** | Straight corridor | 0 | 30-50 |
+| **Medium** | Open arena | 2-4 random | 50-100 |
+| **Hard** | Two-room with doorway | 3-6 random | 100-200 |
+
+All randomization is seedable (xoshiro128** PRNG) for reproducibility.
+
+### Ollama Deployment
+
+After fine-tuning on Colab (see `notebooks/distill_qwen3vl.ipynb`), deploy the model locally:
+
+```bash
+# Import the GGUF model into Ollama
+./scripts/create_ollama_model.sh /path/to/roclaw-nav-q8_0.gguf
+
+# Run with the distilled model (no API costs, <200ms latency)
+npx tsx scripts/run_sim3d.ts --ollama --goal "navigate to the red cube"
+
+# Benchmark: Gemini teacher vs Ollama student
+npx tsx scripts/benchmark_distill.ts
+```
+
+---
+
 ## Gemini Integration
 
 RoClaw uses **Gemini 3.1 Flash Lite** (`gemini-3.1-flash-lite-preview`) as the default VLM, with native structured tool calling for motor control. Tested and working perfectly with the full mjswan simulation pipeline — the VLM receives first-person camera frames, reasons about the scene, and outputs motor tool calls that compile to 6-byte bytecodes.
@@ -221,7 +282,7 @@ npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
 
 # 4b. Or start the HTTP tool server (stays alive, accepts remote tool invocations)
 npx tsx scripts/run_sim3d.ts --serve --gemini
-# Now curl http://localhost:8440/health or POST /invoke from skillos
+# Now curl http://localhost:8440/health, POST /invoke, or GET /telemetry from skillos
 ```
 
 | Port | Protocol | Direction | Purpose |
@@ -229,7 +290,7 @@ npx tsx scripts/run_sim3d.ts --serve --gemini
 | 9090 | WebSocket | Bridge <-> Browser | Motor commands + camera frames + pose |
 | 4210 | UDP | RoClaw stack <-> Bridge | 6/8-byte bytecode frames + telemetry JSON (500ms push) |
 | 8081 | HTTP MJPEG | Bridge -> VisionLoop | First-person camera stream |
-| 8440 | HTTP | skillos bridge -> Tool server | Tool invocations via `--serve` mode |
+| 8440 | HTTP | skillos bridge -> Tool server | Tool invocations + `GET /telemetry` via `--serve` mode |
 
 ---
 
@@ -366,6 +427,8 @@ RoClaw/
 │   ├── 2_qwen_cerebellum/       # LLM 2: VLM Motor Controller
 │   │   ├── vision_loop.ts       #   Camera → VLM → bytecode → ESP32 cycle (STOP-before-infer)
 │   │   ├── bytecode_compiler.ts #   VLM output → 6/8-byte binary frames (V1 + V2)
+│   │   ├── gemini_robotics.ts   #   Gemini inference backend + tool declarations
+│   │   ├── ollama_inference.ts  #   Ollama inference backend for distilled models
 │   │   ├── udp_transmitter.ts   #   UDP transport with V2 ACK support
 │   │   └── telemetry_monitor.ts #   Telemetry parsing + stall detection
 │   ├── 3_llmunix_memory/        # RoClaw memory adapter layer
@@ -373,14 +436,26 @@ RoClaw/
 │   │   ├── roclaw_dream_adapter.ts #  DreamDomainAdapter for robotics
 │   │   ├── strategy_store.ts    #   Strategy management (local + remote)
 │   │   ├── trace_logger.ts      #   Trace logging with bytecode support
-│   │   └── strategies/          #   Hierarchical strategies (4 levels + seeds)
+│   │   ├── strategies/          #   Hierarchical strategies (4 levels + seeds)
+│   │   └── dream_simulator/     #   Text-based dream simulation
+│   │       ├── text_scene.ts        # TextSceneSimulator + 5 prebuilt scenarios
+│   │       ├── scenario_runner.ts   # DreamScenarioRunner (perception-action loop)
+│   │       ├── scenario_generator.ts # Randomized scenario generation (seedable PRNG)
+│   │       ├── trace_poster.ts      # Post traces to evolving-memory server
+│   │       └── dream_inference_router.ts # Gemini/Ollama inference routing
 │   └── shared/                  # Kinematics, safety, logger
 ├── 4_somatic_firmware/          # C++ for ESP32 MCUs
 ├── 5_hardware_cad/              # STL files, Blender scene, BOM
 │   └── mjswan_bridge.ts         # 3D sim bridge: bytecodes <-> MuJoCo
+├── notebooks/
+│   └── distill_qwen3vl.ipynb    # Colab notebook: Unsloth LoRA fine-tuning
+├── Modelfile                    # Ollama model definition for distilled GGUF
 ├── scripts/
 │   ├── dream.ts                 # Trigger dream cycle via evolving-memory
-│   └── run_sim3d.ts             # Full cognitive stack for mjswan simulation
+│   ├── run_sim3d.ts             # Full cognitive stack (--gemini or --ollama)
+│   ├── distill_flywheel.ts      # Automated scenario generation + trace posting
+│   ├── benchmark_distill.ts     # Gemini vs Ollama benchmark comparison
+│   └── create_ollama_model.sh   # Import GGUF model into Ollama
 ├── sim/                         # mjswan 3D simulation (MuJoCo + Three.js)
 ├── docs/                        # Architecture documentation
 └── __tests__/

@@ -33,6 +33,7 @@ import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/2_qwen
 import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_tools';
 import { MemoryClient } from '../src/llmunix-core/memory_client';
 import { TraceSource } from '../src/llmunix-core/types';
+import { TelemetryMonitor } from '../src/2_qwen_cerebellum/telemetry_monitor';
 
 dotenv.config();
 
@@ -61,6 +62,8 @@ let mode: 'go_to' | 'explore' = 'go_to';
 let dreamOnShutdown: boolean | undefined;
 let constraints: string | undefined;
 let useGemini = false;
+let useOllama = false;
+let ollamaModelName = 'roclaw-nav:q8_0';
 let serveMode = false;
 let servePort = 8440;
 
@@ -85,6 +88,12 @@ for (let i = 0; i < args.length; i++) {
     case '--gemini':
       useGemini = true;
       break;
+    case '--ollama':
+      useOllama = true;
+      break;
+    case '--ollama-model':
+      ollamaModelName = args[++i] || ollamaModelName;
+      break;
     case '--serve':
       serveMode = true;
       break;
@@ -101,6 +110,8 @@ Options:
   --no-dream            Disable dream consolidation on shutdown
   --constraints <text>  Additional constraints for navigation
   --gemini              Use Gemini Robotics-ER instead of Qwen-VL (requires GOOGLE_API_KEY)
+  --ollama              Use Ollama with a fine-tuned local model
+  --ollama-model <name> Ollama model name (default: roclaw-nav:q8_0)
   --serve               Start HTTP tool server instead of running a single goal
   --serve-port <port>   Port for the HTTP tool server (default: 8440)
   --help                Show this help message
@@ -111,6 +122,8 @@ Examples:
   npx tsx scripts/run_sim3d.ts --goal "the red cube" --dream
   npx tsx scripts/run_sim3d.ts --goal "the door" --constraints "stay close to walls"
   GOOGLE_API_KEY=... npx tsx scripts/run_sim3d.ts --gemini --goal "find the red cube"
+  npx tsx scripts/run_sim3d.ts --ollama --goal "find the red cube"  # Local fine-tuned model
+  npx tsx scripts/run_sim3d.ts --ollama --ollama-model roclaw-nav:q4km --goal "the red cube"
   npx tsx scripts/run_sim3d.ts --serve --gemini  # Tool server on :8440
   npx tsx scripts/run_sim3d.ts --serve --serve-port 9000 --gemini
 `);
@@ -175,9 +188,18 @@ async function main(): Promise<void> {
   await transmitter.connect();
   logger.info('Sim3D', `UDP transmitter -> ${config.esp32Host}:${config.esp32Port}`);
 
-  // 3. Inference (Gemini, OpenRouter, or local)
+  // 3. Inference (Ollama, Gemini, OpenRouter, or local)
   let infer;
-  if (useGemini) {
+  if (useOllama) {
+    const { OllamaInference } = await import('../src/2_qwen_cerebellum/ollama_inference');
+    const ollama = new OllamaInference({
+      model: ollamaModelName,
+      temperature: 0.1,
+      maxTokens: 128,
+    });
+    infer = ollama.createInferenceFunction();
+    logger.info('Sim3D', `Inference: Ollama (${ollamaModelName})`);
+  } else if (useGemini) {
     const googleApiKey = process.env.GOOGLE_API_KEY;
     if (!googleApiKey) {
       logger.error('Sim3D', 'GOOGLE_API_KEY required for --gemini mode');
@@ -233,7 +255,13 @@ async function main(): Promise<void> {
     logger.warn('Sim3D', 'Camera reconnecting...');
   });
 
-  // 5. Build ToolContext and dispatch via handleTool
+  // 5. Telemetry monitor — listens for telemetry push from the bridge via UDP
+  const telemetryMonitor = new TelemetryMonitor();
+  transmitter.onMessage((msg) => {
+    telemetryMonitor.processMessage(msg);
+  });
+
+  // 6. Build ToolContext and dispatch via handleTool
   //    Tag traces as SIM_3D: physics-based simulation with rendered frames + real VLM
   const ctx: ToolContext = { compiler, transmitter, visionLoop, infer, traceSource: TraceSource.SIM_3D };
 
@@ -280,6 +308,17 @@ async function main(): Promise<void> {
         // GET /health
         if (req.method === 'GET' && urlPath === '/health') {
           sendJson(200, { status: 'ok', tools: toolNames });
+          return;
+        }
+
+        // GET /telemetry — latest telemetry from the bridge
+        if (req.method === 'GET' && urlPath === '/telemetry') {
+          const data = telemetryMonitor.getLastTelemetry();
+          sendJson(200, {
+            success: true,
+            data: data ?? { pose: { x: 0, y: 0, h: 0 }, vel: { left: 0, right: 0 }, stall: false, ts: 0 },
+            stall: telemetryMonitor.isStalled(),
+          });
           return;
         }
 

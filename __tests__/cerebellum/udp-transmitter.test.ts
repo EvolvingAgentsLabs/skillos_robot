@@ -249,6 +249,73 @@ describe('UDPTransmitter', () => {
     await fastTransmitter.disconnect();
   });
 
+  // ===========================================================================
+  // onMessage callback
+  // ===========================================================================
+
+  test('onMessage receives data sent to the transmitter socket', async () => {
+    await transmitter.connect();
+
+    const received = new Promise<string>((resolve) => {
+      transmitter.onMessage((msg) => {
+        resolve(msg.toString());
+      });
+    });
+
+    // Send a message from the mock server to the transmitter's socket
+    // First, we need the transmitter to send something so the server knows the port
+    const frame = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+
+    const clientPort = await new Promise<number>((resolve) => {
+      mockServer.on('message', (_msg, rinfo) => {
+        resolve(rinfo.port);
+      });
+      transmitter.send(frame);
+    });
+
+    // Now send telemetry-like data back to the transmitter
+    const telemetry = JSON.stringify({ telemetry: true, pose: { x: 1, y: 2, h: 0.5 }, vel: { left: 0, right: 0 }, stall: false, ts: 1234 });
+    mockServer.send(Buffer.from(telemetry), clientPort, '127.0.0.1');
+
+    const data = await received;
+    expect(JSON.parse(data)).toMatchObject({ telemetry: true, pose: { x: 1, y: 2 } });
+  });
+
+  test('onMessage registered before connect is applied after connect', async () => {
+    // Create a fresh transmitter (not yet connected)
+    const freshTransmitter = new UDPTransmitter({
+      host: '127.0.0.1', port: serverPort,
+    });
+
+    const received = new Promise<string>((resolve) => {
+      // Register before connect
+      freshTransmitter.onMessage((msg) => {
+        resolve(msg.toString());
+      });
+    });
+
+    await freshTransmitter.connect();
+
+    // Send a frame so we know the port
+    const frame = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+    const clientPort = await new Promise<number>((resolve) => {
+      const handler = (_msg: Buffer, rinfo: dgram.RemoteInfo) => {
+        mockServer.removeListener('message', handler);
+        resolve(rinfo.port);
+      };
+      mockServer.on('message', handler);
+      freshTransmitter.send(frame);
+    });
+
+    // Send data back
+    mockServer.send(Buffer.from('{"hello":true}'), clientPort, '127.0.0.1');
+
+    const data = await received;
+    expect(JSON.parse(data)).toMatchObject({ hello: true });
+
+    await freshTransmitter.disconnect();
+  });
+
   test('sendWithAck ignores ACK with wrong sequence number', async () => {
     const fastTransmitter = new UDPTransmitter({
       host: '127.0.0.1', port: serverPort, ackTimeoutMs: 100,

@@ -76,6 +76,8 @@ export interface RunnerConfig {
   strategies?: string[];
   /** Negative constraints to inject into the system prompt (Full Stack condition) */
   constraints?: string[];
+  /** Skip writing local markdown trace files (when posting to server instead) */
+  skipLocalTraces?: boolean;
 }
 
 // =============================================================================
@@ -323,8 +325,10 @@ export class DreamScenarioRunner {
       frameLog,
     };
 
-    // Write traces
-    this.writeTraces(scenario, result);
+    // Write traces (unless posting to server)
+    if (!this.config.skipLocalTraces) {
+      this.writeTraces(scenario, result);
+    }
 
     return result;
   }
@@ -372,7 +376,7 @@ export class DreamScenarioRunner {
   // User message construction
   // ---------------------------------------------------------------------------
 
-  private buildUserMessage(currentFrame: TextFrame, history: FrameLogEntry[]): string {
+  buildUserMessage(currentFrame: TextFrame, history: FrameLogEntry[]): string {
     const parts: string[] = [];
 
     // Compact action history (last 5 frames: action + distance delta + collision)
