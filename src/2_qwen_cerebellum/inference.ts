@@ -6,6 +6,7 @@
  */
 
 import { logger } from '../shared/logger';
+import { backoffMs, isRetryableError } from '../shared/retry';
 
 // =============================================================================
 // Types
@@ -123,8 +124,13 @@ export class CerebellumInference {
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
-        if (attempt < this.config.maxRetries) {
-          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        if (attempt < this.config.maxRetries && isRetryableError(error)) {
+          const delay = backoffMs(attempt + 1);
+          logger.debug('Inference', `Attempt ${attempt + 1} failed, retrying in ${delay}ms`);
+          await new Promise(r => setTimeout(r, delay));
+        } else if (!isRetryableError(error)) {
+          // Non-retryable (e.g. 400, 401, 403) — fail fast
+          break;
         }
       }
     }

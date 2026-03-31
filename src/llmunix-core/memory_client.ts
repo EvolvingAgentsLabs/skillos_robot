@@ -6,6 +6,7 @@
  */
 
 import type { HierarchyLevel, TraceSource, TraceOutcome } from './types';
+import { withRetry } from '../shared/retry';
 
 // =============================================================================
 // Types
@@ -187,25 +188,50 @@ export class MemoryClient {
 
   // ── Private HTTP helpers ───────────────────────────────────────
 
-  private async get<T>(path: string): Promise<T> {
-    const resp = await fetch(`${this.baseUrl}${path}`);
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`GET ${path} failed (${resp.status}): ${body}`);
-    }
-    return resp.json() as Promise<T>;
+  private async get<T>(path: string, timeoutMs = 5000): Promise<T> {
+    return withRetry(
+      async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const resp = await fetch(`${this.baseUrl}${path}`, {
+            signal: controller.signal,
+          });
+          if (!resp.ok) {
+            const body = await resp.text();
+            throw new Error(`GET ${path} failed (${resp.status}): ${body}`);
+          }
+          return resp.json() as Promise<T>;
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      { maxRetries: 2, baseMs: 200, label: `GET ${path}` },
+    );
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`POST ${path} failed (${resp.status}): ${text}`);
-    }
-    return resp.json() as Promise<T>;
+  private async post<T>(path: string, body: unknown, timeoutMs = 30000): Promise<T> {
+    return withRetry(
+      async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const resp = await fetch(`${this.baseUrl}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          if (!resp.ok) {
+            const text = await resp.text();
+            throw new Error(`POST ${path} failed (${resp.status}): ${text}`);
+          }
+          return resp.json() as Promise<T>;
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      { maxRetries: 2, baseMs: 200, label: `POST ${path}` },
+    );
   }
 }
