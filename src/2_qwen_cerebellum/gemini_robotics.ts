@@ -41,6 +41,8 @@ export interface GeminiInferenceConfig {
   tools: GeminiToolDeclaration[];
   /** API base URL (default: Gemini REST endpoint) */
   apiBaseUrl: string;
+  /** Enable SSE streaming for faster stop/toolcall detection (default: true) */
+  enableStreaming: boolean;
 }
 
 export interface GeminiToolDeclaration {
@@ -64,6 +66,7 @@ const DEFAULT_CONFIG: GeminiInferenceConfig = {
   useToolCalling: false,
   tools: [],
   apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+  enableStreaming: true,
 };
 
 // =============================================================================
@@ -263,50 +266,208 @@ export class GeminiRoboticsInference {
     userMessage: string,
     images?: string[],
   ): Promise<{ content: string; usage?: { promptTokens?: number; completionTokens?: number } }> {
-    // Build content parts for the user message
+    if (this.config.enableStreaming) {
+      try {
+        return await this.callAPIStreaming(systemPrompt, userMessage, images);
+      } catch (err) {
+        logger.debug('GeminiInference', 'Streaming failed, falling back to non-streaming', { err });
+        return this.callAPINonStreaming(systemPrompt, userMessage, images);
+      }
+    }
+    return this.callAPINonStreaming(systemPrompt, userMessage, images);
+  }
+
+  /**
+   * SSE streaming call — returns as soon as a functionCall or TOOLCALL pattern is detected.
+   * This avoids waiting for the full response when the model has already emitted a motor command.
+   */
+  private async callAPIStreaming(
+    systemPrompt: string,
+    userMessage: string,
+    images?: string[],
+  ): Promise<{ content: string; usage?: { promptTokens?: number; completionTokens?: number } }> {
+    const body = this.buildRequestBody(systemPrompt, userMessage, images);
+    const url = `${this.config.apiBaseUrl}/models/${this.config.model}:streamGenerateContent?alt=sse&key=${this.config.apiKey}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Gemini streaming API error ${response.status}: ${errorBody}`);
+      }
+
+      if (!response.body) {
+        throw new Error('No response body for streaming');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulatedText = '';
+      let usage: { promptTokens?: number; completionTokens?: number } | undefined;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';  // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const jsonStr = line.slice(6).trim();
+            if (!jsonStr || jsonStr === '[DONE]') continue;
+
+            let chunk: {
+              candidates?: Array<{
+                content?: {
+                  parts?: Array<{
+                    text?: string;
+                    functionCall?: { name: string; args: Record<string, unknown> };
+                  }>;
+                };
+              }>;
+              usageMetadata?: {
+                promptTokenCount?: number;
+                candidatesTokenCount?: number;
+              };
+            };
+
+            try {
+              chunk = JSON.parse(jsonStr);
+            } catch {
+              continue;  // Malformed chunk, skip
+            }
+
+            // Track usage from last chunk
+            if (chunk.usageMetadata) {
+              usage = {
+                promptTokens: chunk.usageMetadata.promptTokenCount,
+                completionTokens: chunk.usageMetadata.candidatesTokenCount,
+              };
+            }
+
+            const parts = chunk.candidates?.[0]?.content?.parts;
+            if (!parts) continue;
+
+            // Early exit: functionCall detected
+            const fcPart = parts.find(p => p.functionCall);
+            if (fcPart?.functionCall) {
+              const fc = fcPart.functionCall;
+              await reader.cancel();
+              return {
+                content: `TOOLCALL:${JSON.stringify({ name: fc.name, args: fc.args })}`,
+                usage,
+              };
+            }
+
+            // Accumulate text parts
+            for (const part of parts) {
+              if (part.text) {
+                accumulatedText += part.text;
+              }
+            }
+
+            // Early exit: TOOLCALL pattern detected in accumulated text
+            const toolcallMatch = accumulatedText.match(/TOOLCALL:\{[^}]+\}/);
+            if (toolcallMatch) {
+              await reader.cancel();
+              return { content: toolcallMatch[0], usage };
+            }
+
+            // Early exit: Python-style API call detected
+            const pyMatch = accumulatedText.match(/default_api\.(\w+)\(([^)]*)\)/);
+            if (pyMatch) {
+              const fnName = pyMatch[1];
+              const argsStr = pyMatch[2];
+              const args: Record<string, unknown> = {};
+              for (const pair of argsStr.split(',')) {
+                const [key, val] = pair.split('=').map(s => s.trim());
+                if (key && val !== undefined) {
+                  args[key] = isNaN(Number(val)) ? val : Number(val);
+                }
+              }
+              await reader.cancel();
+              return {
+                content: `TOOLCALL:${JSON.stringify({ name: fnName, args })}`,
+                usage,
+              };
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      // Stream ended — parse final accumulated text same as non-streaming
+      if (!accumulatedText) {
+        throw new Error('Empty response from Gemini streaming API');
+      }
+
+      // Check for Python-style call in final text
+      const pyCallMatch = accumulatedText.match(/default_api\.(\w+)\(([^)]*)\)/);
+      if (pyCallMatch) {
+        const fnName = pyCallMatch[1];
+        const argsStr = pyCallMatch[2];
+        const args: Record<string, unknown> = {};
+        for (const pair of argsStr.split(',')) {
+          const [key, val] = pair.split('=').map(s => s.trim());
+          if (key && val !== undefined) {
+            args[key] = isNaN(Number(val)) ? val : Number(val);
+          }
+        }
+        return {
+          content: `TOOLCALL:${JSON.stringify({ name: fnName, args })}`,
+          usage,
+        };
+      }
+
+      return { content: accumulatedText, usage };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private buildRequestBody(
+    systemPrompt: string,
+    userMessage: string,
+    images?: string[],
+  ): Record<string, unknown> {
     const parts: Array<Record<string, unknown>> = [];
 
-    // Add images as inline data
     if (images && images.length > 0) {
       for (const image of images) {
-        // Strip data URI prefix if present
         const base64Data = image.startsWith('data:')
           ? image.replace(/^data:image\/[^;]+;base64,/, '')
           : image;
-
         parts.push({
-          inlineData: {
-            mimeType: 'image/jpeg',
-            data: base64Data,
-          },
+          inlineData: { mimeType: 'image/jpeg', data: base64Data },
         });
       }
     }
 
-    // Add text part
     parts.push({ text: userMessage });
 
-    // Build request body
     const body: Record<string, unknown> = {
-      systemInstruction: {
-        parts: [{ text: systemPrompt }],
-      },
-      contents: [
-        {
-          role: 'user',
-          parts,
-        },
-      ],
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: 'user', parts }],
       generationConfig: {
         maxOutputTokens: this.config.maxOutputTokens,
         temperature: this.config.temperature,
       },
     };
 
-    // Send thinkingConfig to control thinking behavior.
-    // Models like gemini-2.5-flash think by default and can exhaust maxOutputTokens
-    // on internal reasoning. Explicitly set budget=0 to disable thinking for motor control.
-    // Skip only for flash-lite models that don't support the thinking API.
     const isLiteModel = this.config.model.includes('lite');
     if (this.config.thinkingBudget > 0 || !isLiteModel) {
       (body.generationConfig as Record<string, unknown>).thinkingConfig = {
@@ -314,7 +475,6 @@ export class GeminiRoboticsInference {
       };
     }
 
-    // Add tool declarations if enabled
     if (this.config.useToolCalling && this.config.tools.length > 0) {
       body.tools = [{
         functionDeclarations: this.config.tools.map(t => ({
@@ -325,6 +485,15 @@ export class GeminiRoboticsInference {
       }];
     }
 
+    return body;
+  }
+
+  private async callAPINonStreaming(
+    systemPrompt: string,
+    userMessage: string,
+    images?: string[],
+  ): Promise<{ content: string; usage?: { promptTokens?: number; completionTokens?: number } }> {
+    const body = this.buildRequestBody(systemPrompt, userMessage, images);
     const url = `${this.config.apiBaseUrl}/models/${this.config.model}:generateContent?key=${this.config.apiKey}`;
 
     const controller = new AbortController();

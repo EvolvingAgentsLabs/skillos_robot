@@ -13,15 +13,9 @@
 
 ---
 
-```
-  ┌──────────────────────────────────────────────────────────────────┐
-  │                                                                  │
-  │   A VLM sees through a camera.                                   │
-  │   It reasons about the scene in a Chain of Thought.              │
-  │   It outputs 6-byte motor bytecodes.                             │
-  │   A 20cm cube robot navigates your home.                         │
-  │                                                                  │
-  └──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    CAM["Camera"] --> VLM["VLM\nChain of Thought"] --> BC["6-byte\nMotor Bytecodes"] --> ROBOT["20cm Cube Robot\nNavigates Your Home"]
 ```
 
 RoClaw is the physical embodiment layer of a three-part cognitive ecosystem. It gives AI agents a body — a 20cm cube robot that sees through a camera and moves with stepper motors, driven by a VLM that outputs raw motor bytecodes.
@@ -130,18 +124,14 @@ V2 (8 bytes): [0xAA][SEQ][OPCODE][PARAM_L][PARAM_R][FLAGS][CHECKSUM][0xFF]
 
 A biologically-inspired hierarchical planning system that decomposes high-level goals into reactive motor commands:
 
-```
-Level 1: MAIN GOAL (Cortex)           "Fetch me a drink"
-    |                                   Queries strategies, decomposes into sub-goals
-    v
-Level 2: STRATEGIC PLAN               "Traverse hallway → kitchen"
-    |                                   Uses route strategies from memory
-    v
-Level 3: TACTICAL PLAN                "Door blocked. Route around couch."
-    |                                   Strategy-informed navigation
-    v
-Level 4: REACTIVE EXECUTION           Sub-second motor corrections (bytecodes)
-                                       Constraint-aware VisionLoop
+```mermaid
+flowchart TD
+    L1["**Level 1: MAIN GOAL (Cortex)**\nFetch me a drink\nQueries strategies, decomposes into sub-goals"]
+    L2["**Level 2: STRATEGIC PLAN**\nTraverse hallway → kitchen\nUses route strategies from memory"]
+    L3["**Level 3: TACTICAL PLAN**\nDoor blocked. Route around couch.\nStrategy-informed navigation"]
+    L4["**Level 4: REACTIVE EXECUTION**\nSub-second motor corrections (bytecodes)\nConstraint-aware VisionLoop"]
+
+    L1 --> L2 --> L3 --> L4
 ```
 
 ---
@@ -278,10 +268,11 @@ Also supports Qwen-VL via OpenRouter and local inference as alternatives. See [d
 
 RoClaw integrates with [mjswan](https://github.com/EvolvingAgentsLabs/mjswan) — a browser-based MuJoCo WASM + Three.js physics simulator. The full VLM closed loop runs in simulation with no hardware required:
 
-```
-Browser (MuJoCo + Three.js)  <--WS:9090-->  mjswan Bridge  <--UDP:4210-->  RoClaw stack
-                                             |
-                                             +--> MJPEG :8081 --> VisionLoop --> VLM
+```mermaid
+flowchart LR
+    B["Browser\nMuJoCo + Three.js"] <--"WS :9090"--> BR["mjswan Bridge"]
+    BR <--"UDP :4210"--> RS["RoClaw stack"]
+    BR --"MJPEG :8081"--> VL["VisionLoop"] --> VLM["VLM"]
 ```
 
 ### Running the Simulation
@@ -446,7 +437,7 @@ RoClaw/
 │   ├── 2_qwen_cerebellum/       # LLM 2: VLM Motor Controller
 │   │   ├── vision_loop.ts       #   Camera → VLM → bytecode → ESP32 cycle (STOP-before-infer)
 │   │   ├── bytecode_compiler.ts #   VLM output → 6/8-byte binary frames (V1 + V2)
-│   │   ├── gemini_robotics.ts   #   Gemini inference backend + tool declarations
+│   │   ├── gemini_robotics.ts   #   Gemini inference backend + tool declarations + SSE streaming
 │   │   ├── ollama_inference.ts  #   Ollama inference backend for distilled models
 │   │   ├── udp_transmitter.ts   #   UDP transport with V2 ACK support
 │   │   └── telemetry_monitor.ts #   Telemetry parsing + stall detection
