@@ -1,39 +1,181 @@
-# Gemini Robotics-ER Integration Report
+# Gemini Robotics-ER 1.6 Integration Report
 
-**Date:** March 5, 2026
-**Branch:** `integration-mjswan-gemini-robotics`
-**Status:** Feature-complete, simulation-verified
+**Date:** April 14, 2026 (updated from March 5, 2026)
+**Model:** `gemini-robotics-er-1.6-preview`
+**Status:** Production — telemetry-guided navigation verified end-to-end
 
 ## Overview
 
-RoClaw now supports Google's Gemini Robotics-ER as a drop-in inference backend alongside the existing Qwen-VL/OpenRouter stack. The integration includes native structured tool calling (eliminating hex text parsing), spatial grounding with bounding boxes, configurable thinking budgets for strategic analysis, and a physics-based goal confirmation system using proximity detection from the MuJoCo simulation.
+RoClaw uses [Gemini Robotics-ER 1.6](https://deepmind.google/discover/blog/gemini-robotics-brings-ai-into-the-physical-world/) as the default VLM for embodied navigation. The integration includes native structured tool calling (7 motor opcodes), telemetry-guided navigation (pose + bearing + distance injection into VLM prompts), spatial grounding with bounding boxes, configurable thinking budgets, code execution support, and physics-based goal confirmation from MuJoCo.
+
+**Resources:**
+- [DeepMind Blog: Gemini Robotics brings AI into the physical world](https://deepmind.google/discover/blog/gemini-robotics-brings-ai-into-the-physical-world/)
+- [Gemini API Robotics Documentation](https://ai.google.dev/gemini-api/docs/robotics)
+
+## Gemini Robotics-ER 1.6 Features Used
+
+### Spatial Grounding
+- **Pointing:** `[y, x]` normalized 0-1000 coordinates for object location
+- **Bounding Boxes:** `[ymin, xmin, ymax, xmax]` format for object detection in scene analysis
+- `SpatialFeature` type supports both array format (Robotics-ER native) and legacy `{x,y,w,h}` objects
+- Proportional navigation hints: 5-bucket system (FAR LEFT / SLIGHTLY LEFT / CENTERED / SLIGHTLY RIGHT / FAR RIGHT) with estimated turn angles
+
+### Native Function Calling
+- 7 motor control tools declared as structured function schemas
+- The model returns tool calls (`move_forward(180, 180)`) that compile directly to 6-byte bytecodes
+- No text parsing — structured `functionCall` responses map 1:1 to motor opcodes
+
+| Tool | Opcode | Parameters |
+|------|--------|------------|
+| `move_forward` | `0x01` | `speed_l`, `speed_r` (0-255) |
+| `move_backward` | `0x02` | `speed_l`, `speed_r` |
+| `turn_left` | `0x03` | `speed_l`, `speed_r` |
+| `turn_right` | `0x04` | `speed_l`, `speed_r` |
+| `rotate_cw` | `0x05` | `degrees`, `speed` |
+| `rotate_ccw` | `0x06` | `degrees`, `speed` |
+| `stop` | `0x07` | — |
+
+### Embodied Reasoning
+- Interprets first-person camera frames fused with SENSOR DATA (bearing, distance, pose)
+- Frame history (4 consecutive frames) provides temporal context for velocity and depth perception
+- The system prompt is minimal: "Execute the recommended command from SENSOR DATA"
+
+### Code Execution
+- `codeExecution` tool enabled for Robotics-ER models (gated on `model.includes('robotics-er')`)
+- Allows the model to write Python for distance computation, image analysis, and instrument reading
+- Not active in the fast motor loop — available for scene analysis tasks
+
+### Thinking Budget Control
+- `thinkingBudget=0` for 2Hz motor control loop (fast, reactive)
+- `thinkingBudget=1024` for scene analysis and dream consolidation (deep reasoning)
+- Configurable via `GEMINI_THINKING_BUDGET` and `GEMINI_SCENE_THINKING_BUDGET` env vars
+- For Robotics-ER (non-lite) models, `thinkingConfig` is always sent (budget=0 means no extended thinking)
+
+### Success Detection
+- Physics-based arrival confirmation: bridge computes distance from robot to target every pose update
+- `goalReached` flag when distance < target radius (default 0.25m)
+- Decoupled from VLM output — the model's `stop()` calls are validated against physics ground truth
+
+## Telemetry-Guided Navigation (New in 1.6 Integration)
+
+The major upgrade from the 1.5 integration is **telemetry-guided navigation** — the bridge computes real-time bearing and distance to the target and injects this as SENSOR DATA into every VLM prompt.
+
+### Architecture
+
+```
+Bridge (mjswan_bridge.ts)
+  ├── Receives pose from MuJoCo via WebSocket
+  ├── Computes: targetBearing = atan2(dy, dx) - heading  (MuJoCo convention: 0 = +X axis)
+  ├── Computes: targetDist = sqrt(dx² + dy²)
+  └── Pushes telemetry via UDP every 500ms
+
+TelemetryMonitor (telemetry_monitor.ts)
+  └── Parses push messages, stores latest { pose, targetDist, targetBearing }
+
+VisionLoop (vision_loop.ts)
+  ├── Calls telemetryProvider() to get latest bearing + distance
+  ├── Injects SENSOR DATA section into VLM user message:
+  │     SENSOR DATA (from bridge):
+  │     - Target bearing: -15° (slightly right)
+  │     - Target distance: 42cm
+  │     >>> CALL: move_forward(180, 180)
+  └── Speed-tuned rotation hints:
+        - |bearing| ≤ 25°: move_forward (speed 180 or 100 based on distance)
+        - |bearing| 25-70°: rotate (speed 50, ~53°/step)
+        - |bearing| > 70°: rotate (speed 70, ~74°/step)
+        - distance < 15cm: stop()
+```
+
+### Bearing Computation
+
+The bearing formula uses MuJoCo's yaw convention where heading=0 means facing the +X axis:
+
+```typescript
+const absBearing = Math.atan2(tdy, tdx);  // 0 = +X axis (matches MuJoCo yaw)
+let relBearing = absBearing - state.pose.h;
+// Normalize to -PI..PI
+while (relBearing > Math.PI) relBearing -= 2 * Math.PI;
+while (relBearing < -Math.PI) relBearing += 2 * Math.PI;
+```
+
+- Positive bearing = target is to the LEFT (CCW rotation needed)
+- Negative bearing = target is to the RIGHT (CW rotation needed)
+
+### Rotation Speed Tuning
+
+MuJoCo simulation has a friction threshold — speed values below ~50 (0.31 rad/s) are insufficient to overcome wheel friction. The telemetry system uses:
+
+| Bearing Range | Action | Speed | Actual Rotation/Step |
+|---------------|--------|-------|---------------------|
+| ≤ 25° | `move_forward` | 180 (far) / 100 (close) | N/A |
+| 25°–70° | `rotate_cw/ccw` | 50 | ~53°/step |
+| > 70° | `rotate_cw/ccw` | 70 | ~74°/step |
+| distance < 15cm | `stop` | — | — |
+
+## Simulation Results
+
+### Latest Run (April 14, 2026)
+
+| Metric | Value |
+|--------|-------|
+| Goal | "navigate to the red cube" |
+| Model | `gemini-robotics-er-1.6-preview` |
+| Initial distance | 78cm |
+| Final distance | 23cm (within 0.25m radius) |
+| Total frames | 52 |
+| Duration | 137s |
+| Outcome | SUCCESS |
+| Confidence | 0.9 |
+| Phase 1 (rotation) | 12 frames of `rotate_ccw` to align with target |
+| Phase 2 (approach) | 40 frames of `move_forward` (speed 180 → 100 as distance decreased) |
+
+### Previous Run (March 5, 2026 — ER 1.5)
+
+| Metric | Value |
+|--------|-------|
+| Model | `gemini-robotics-er-1.5-preview` |
+| Minimum distance reached | 0.70m (did NOT reach 0.25m target) |
+| False VLM STOPs | 2 (at 1.10m and 0.70m) |
+| Outcome | Did not reach target |
+
+The upgrade from ER 1.5 to 1.6 with telemetry guidance achieved successful navigation for the first time.
 
 ## What's Integrated
 
 ### Gemini Inference Backend (`src/2_qwen_cerebellum/gemini_robotics.ts`)
 
 - **GeminiRoboticsInference** class with full Gemini API support
-- 7 motor control tool declarations: `move_forward`, `move_backward`, `turn_left`, `turn_right`, `rotate_cw`, `rotate_ccw`, `stop`
-- Structured function calling: Gemini returns `TOOLCALL:{"name":"move_forward","args":{"speed_l":128,"speed_r":128}}` instead of raw hex bytes
+- 7 motor control tool declarations as structured function schemas
+- `codeExecution` tool conditionally enabled for Robotics-ER models
 - Thinking budget: 0 for fast motor control, configurable (1024+) for dream consolidation
 - Exponential backoff retry logic, stats tracking, timeout handling
+- Default model: `gemini-robotics-er-1.6-preview`
+
+### Telemetry-Guided VisionLoop (`src/2_qwen_cerebellum/vision_loop.ts`)
+
+- `setTelemetryProvider(fn)` accepts a callback returning `{ pose, targetDist, targetBearing }`
+- SENSOR DATA injection into VLM user message with bearing, distance, and `>>> CALL:` directive
+- Speed-tuned rotation hints based on bearing magnitude
+- Shannon entropy stuck detection (STUCK_WINDOW=12, threshold=0.5)
+- Frame history and temporal context for multi-frame reasoning
+
+### Bridge Telemetry (`src/mjswan_bridge.ts`)
+
+- `TelemetryMessage` includes `targetDist` and `targetBearing` fields
+- `startTelemetryBroadcast(target)` computes relative bearing using `atan2(tdy, tdx)` (MuJoCo convention)
+- Bearing normalized to -180°..180°
+- Telemetry pushed via UDP every 500ms
 
 ### Tool-Calling Bytecode Compilation (`src/2_qwen_cerebellum/bytecode_compiler.ts`)
 
-- `getToolCallingSystemPrompt(goal)` generates Gemini-specific system instructions
-- `tryParseToolCall(text)` maps structured tool calls to bytecodes (Mode 0)
-- Proper parameter scaling from Gemini's 0-255 normalized outputs
-
-### VisionLoop Dual-Mode (`src/2_qwen_cerebellum/vision_loop.ts`)
-
-- `useToolCallingPrompt` config flag switches between tool-calling and hex bytecode prompts
-- Frame history and temporal context work identically in both modes
-- New `confirmArrival(reason)` method for external arrival confirmation (physics engine)
+- `TOOL_CALLING_SYSTEM_PROMPT` simplified to trust SENSOR DATA directives
+- `tryParseToolCall(text)` maps structured tool calls to bytecodes
+- Parameter scaling from Gemini's 0-255 normalized outputs
 
 ### Scene Analysis via Gemini (`src/1_openclaw_cortex/roclaw_tools.ts`)
 
 - `ensureMapInfer()` auto-selects Gemini when `GOOGLE_API_KEY` is available
-- Higher token limit (1024) and longer timeout (30s) for analytical tasks
+- Separate `GEMINI_SCENE_THINKING_BUDGET` (default: 1024) for deeper spatial reasoning
 - Falls back to Qwen if no Google key
 
 ### Dream Consolidation (`src/3_llmunix_memory/dream_inference.ts`)
@@ -42,113 +184,59 @@ RoClaw now supports Google's Gemini Robotics-ER as a drop-in inference backend a
 - Auto-detects provider: `DREAM_PROVIDER=gemini` or key-based fallback
 - Temperature 0.3 for consistent strategic reasoning
 
-### 3D Simulation Runner (`scripts/run_sim3d.ts`)
-
-- `--gemini` CLI flag routes all inference through Gemini
-- Tool calling enabled by default in Gemini mode
-- Physics-based goal polling (see below)
-
-## Physics-Based Goal Confirmation
-
-### Problem
-
-The VLM's STOP output is unreliable: it may output STOP prematurely (declaring arrival far from the target) or never output STOP at all. We needed ground-truth from the physics engine.
-
-### Solution
-
-Three-layer system using the MuJoCo simulation's real-time pose data:
-
-**1. Bridge: Target Tracking** (`src/mjswan_bridge.ts`)
-
-- `GoalTarget` type: `{ name, x, y, radius }` with default `red_cube:-0.6:-0.5:0.25`
-- `--target "name:x:y:radius"` CLI arg for custom targets
-- Distance computation on every WebSocket pose update:
-  ```
-  dx = pose.x - target.x; dy = pose.y - target.y
-  targetDistance = sqrt(dx*dx + dy*dy)
-  goalReached = targetDistance < target.radius
-  ```
-- Extended `GET_STATUS` response: `{ targetName, targetDistance, goalReached }`
-- Dashboard shows: `Target: red_cube  Dist: 0.42m` or `REACHED`
-
-**2. VisionLoop: External Arrival** (`src/2_qwen_cerebellum/vision_loop.ts`)
-
-- `confirmArrival(reason)` closes reactive traces as SUCCESS, emits `'arrival'`, stops the loop
-- Decouples arrival from VLM STOP — physics engine can trigger it
-
-**3. Cognitive Stack: Distance Polling** (`scripts/run_sim3d.ts`)
-
-- Starts a UDP polling loop immediately (before `handleTool` blocks on planning)
-- Sends `GET_STATUS` every 2 seconds, parses JSON response
-- Logs: `Target "red_cube": 0.77m away`
-- On `goalReached === true`: confirms arrival, sends STOP, triggers dream consolidation
-
-### Simulation Results
-
-| Metric | Value |
-|--------|-------|
-| Initial distance (robot at origin) | 0.77m (correct: sqrt(0.6^2 + 0.5^2)) |
-| Polling interval | 2 seconds |
-| Distance accuracy | Matches MuJoCo world coordinates (meters) |
-| False VLM STOPs observed | 2 (at 1.10m and 0.70m — correctly NOT confirmed by physics) |
-| Minimum distance reached | 0.70m (robot approached but didn't enter 0.25m radius) |
-| TypeScript compilation | Clean (0 errors) |
-| Test suite | 410 passed, 24 suites |
-
-### Bugs Found & Fixed During Testing
-
-1. **Infinity serialization** — `targetDistance: Infinity` (initial state) became `null` in JSON, crashing `null.toFixed(2)` in the poller. Fixed by computing initial distance from origin to target.
-2. **Late polling start** — Polling was gated on `handleTool` returning (30+ seconds for topo planning). Moved to start before `handleTool`.
-3. **Unreliable one-shot UDP listener** — One-shot `on('message')` pattern missed responses. Replaced with permanent handler + explicit `bind()`.
-
 ## Gemini vs Qwen: Component Matrix
 
-| Component | Gemini | Qwen | Notes |
-|-----------|--------|------|-------|
-| Motor control (VisionLoop) | Tool calling | Hex bytecode | `--gemini` flag |
-| Scene analysis (topo map) | Auto-detected | Fallback | Higher token limit for Gemini |
+| Component | Gemini Robotics-ER 1.6 | Qwen-VL | Notes |
+|-----------|------------------------|---------|-------|
+| Motor control (VisionLoop) | Tool calling + telemetry | Hex bytecode | `--gemini` flag |
+| Scene analysis (topo map) | Auto-detected | Fallback | Higher token limit + thinking budget for Gemini |
 | Navigation planning | Backend-agnostic | Backend-agnostic | Uses `InferenceFunction` |
 | Hierarchical planner | Backend-agnostic | Backend-agnostic | Uses `InferenceFunction` |
 | Dream consolidation | Thinking budget | Standard | Auto-detects provider |
-| Semantic map analysis | Backend-agnostic | Backend-agnostic | Uses `InferenceFunction` |
-| Spatial grounding | Prepared | N/A | BBox features parsed, not yet active |
+| Spatial grounding | `[ymin,xmin,ymax,xmax]` bboxes | N/A | Native in Robotics-ER |
+| Code execution | Enabled | N/A | Gated on model name |
 | Physics goal confirmation | N/A | N/A | Independent of inference backend |
 
-## Pending Work
+## Bugs Found & Fixed
 
-### Testing Needed
+### Telemetry Integration (April 2026)
+1. **Bearing formula wrong axis** — `atan2(tdx, tdy)` gives 0=+Y but MuJoCo heading 0=+X. Fixed to `atan2(tdy, tdx)`.
+2. **LEFT/RIGHT sign convention** — Positive relBearing = CCW = LEFT (not RIGHT). Fixed by swapping labels and CW/CCW mapping.
+3. **Rotation speed too low** — Speed 30 (0.185 rad/s) below MuJoCo friction threshold — robot didn't move. Fixed with speed 50-70.
+4. **Rotation speed too high** — Speed 100 (~106°/step with coast) caused oscillation overshoot. Reduced to 50-70.
+5. **Stuck detection feedback loop** — `handleStepRetry` → planner → "do not move forward" → infinite rotation. Fixed by clearing stale constraints and injecting breakout directives.
+6. **External camera black frames** — Camera `xyaxes="1 0 0 0 -1 0"` looked UP. Fixed to `"1 0 0 0 1 0"`.
 
-- **End-to-end goal reach**: Robot needs to navigate within 0.25m of the red cube to trigger physics confirmation. VLM navigation quality limits this — the robot explores but doesn't consistently approach the target.
-- **Spatial grounding**: `SpatialFeature` with bounding boxes is implemented but not actively tested with Gemini.
-- **Gemini live integration tests**: `gemini-robotics-live.test.ts` exists but requires `GOOGLE_API_KEY` to run.
-
-### Known Limitations
-
-- **VLM navigation quality**: Gemini tends to rotate/scan instead of moving directly toward the target. The tool-calling prompt may need tuning for more decisive forward movement.
-- **Premature STOP**: Gemini calls `stop()` tool before reaching the target. Physics confirmation correctly rejects these, but the VisionLoop stops and must be restarted by the planner's step-retry logic.
-- **Thinking budget latency**: Adding thinking tokens to the motor control loop would slow it from ~200ms to seconds. Kept at 0 for motor control intentionally.
+### Physics Confirmation (March 2026)
+1. **Infinity serialization** — `targetDistance: Infinity` became `null` in JSON. Fixed by computing initial distance.
+2. **Late polling start** — Polling gated on `handleTool` (30+ seconds). Moved to start before `handleTool`.
+3. **Unreliable UDP listener** — One-shot pattern missed responses. Replaced with permanent handler.
 
 ## Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `GOOGLE_API_KEY` | Gemini API key | (required for Gemini) |
-| `GEMINI_MODEL` | Model ID | `gemini-robotics-er-1.5-preview` |
-| `GEMINI_THINKING_BUDGET` | Thinking tokens | `0` (motor), `1024` (dream) |
+| `GEMINI_MODEL` | Model ID | `gemini-robotics-er-1.6-preview` |
+| `GEMINI_THINKING_BUDGET` | Motor control thinking tokens | `0` |
+| `GEMINI_SCENE_THINKING_BUDGET` | Scene analysis thinking tokens | `1024` |
 | `DREAM_PROVIDER` | Force dream backend | Auto-detect |
 | `OPENROUTER_API_KEY` | Qwen fallback | (required for Qwen) |
 
 ## Running the Simulation
 
 ```bash
-# Terminal 1: Start bridge with target tracking
+# Terminal 1: Build scene (one-time)
+cd sim && python build_scene.py
+
+# Terminal 2: Start bridge with telemetry + target tracking
 npm run sim:3d
 
-# Terminal 2: Open browser (MuJoCo 3D scene)
+# Terminal 3: Open browser (MuJoCo 3D scene)
 open http://localhost:8000?bridge=ws://localhost:9090
 
-# Terminal 3: Run cognitive stack with Gemini
-GOOGLE_API_KEY=your_key npx tsx scripts/run_sim3d.ts --gemini --goal "the red cube"
+# Terminal 4: Run cognitive stack with Gemini Robotics-ER 1.6
+npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
 ```
 
-The bridge dashboard shows real-time target distance, and the cognitive stack logs `Target "red_cube": X.XXm away` every 2 seconds.
+The bridge pushes telemetry (pose, bearing, distance) every 500ms. The VisionLoop injects this as SENSOR DATA into each VLM prompt. The cognitive stack confirms arrival via physics when within 0.25m of the target.

@@ -8,17 +8,25 @@
 
 ![Status](https://img.shields.io/badge/Status-Active%20Research-red)
 ![Hardware](https://img.shields.io/badge/Target-ESP32%20S3-green)
-![Runtime LLM](https://img.shields.io/badge/Runtime%20LLM-Gemini%203.1%20Flash%20Lite-orange)
+![Runtime LLM](https://img.shields.io/badge/Runtime%20VLM-Gemini%20Robotics--ER%201.6-blue)
 ![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey)
 
 ---
 
 ```mermaid
 flowchart LR
-    CAM["Camera"] --> VLM["VLM\nChain of Thought"] --> BC["6-byte\nMotor Bytecodes"] --> ROBOT["20cm Cube Robot\nNavigates Your Home"]
+    CAM["Camera"] --> VLM["Gemini\nRobotics-ER 1.6"] --> BC["6-byte\nMotor Bytecodes"] --> ROBOT["20cm Cube Robot\nNavigates Your Home"]
 ```
 
-RoClaw is the physical embodiment layer of a three-part cognitive ecosystem. It gives AI agents a body — a 20cm cube robot that sees through a camera and moves with stepper motors, driven by a VLM that outputs raw motor bytecodes.
+RoClaw is the physical embodiment layer of a three-part cognitive ecosystem. It gives AI agents a body — a 20cm cube robot that sees through a camera and moves with stepper motors, driven by [Gemini Robotics-ER 1.6](https://deepmind.google/discover/blog/gemini-robotics-brings-ai-into-the-physical-world/) — Google DeepMind's embodied reasoning VLM with spatial grounding, native function calling, and success detection.
+
+<div align="center">
+
+[![Gemini Robotics](https://img.youtube.com/vi/kBwxmlI2yHQ/0.jpg)](https://www.youtube.com/watch?v=kBwxmlI2yHQ)
+
+*Gemini Robotics — Google DeepMind*
+
+</div>
 
 | Repository | Brain Region | Role |
 |---|---|---|
@@ -39,10 +47,12 @@ graph TD
     BRIDGE -->|"HTTP :8440 (sim)"| TOOLSRV["run_sim3d.ts --serve"]
     CORTEX -->|"Plan: hallway → kitchen"| PLANNER[Hierarchical Planner]
     TOOLSRV -->|handleTool| PLANNER
-    PLANNER -->|"Strategy-informed goal"| CEREBELLUM[2. Cerebellum — Gemini 3.1 Flash Lite]
-    CEREBELLUM -->|"Sees camera frame"| COMPILE[Bytecode Compiler]
+    PLANNER -->|"Strategy-informed goal"| CEREBELLUM[2. Cerebellum — Gemini Robotics-ER 1.6]
+    CEREBELLUM -->|"Sees camera + telemetry"| COMPILE[Bytecode Compiler]
     COMPILE -->|"AA 01 64 64 CB FF"| ESP[ESP32-S3 / mjswan Bridge]
     ESP -->|"Robot moves"| WORLD((Physical World / MuJoCo Sim))
+    ESP -->|"Pose + bearing + distance"| TELEM[Telemetry Monitor]
+    TELEM -->|"SENSOR DATA injection"| CEREBELLUM
     CEREBELLUM -->|"Write .md trace"| TRACES[Local .md Trace Files]
     TRACES -->|"Strategies + constraints"| PLANNER
     SKILLOS -.->|"Dream consolidation"| TRACES
@@ -50,24 +60,32 @@ graph TD
 
 ---
 
-## Navigation Chain of Thought
+## Telemetry-Guided Navigation
 
-A structured reasoning pipeline where a VLM reasons step-by-step through spatial understanding — like LLM chain-of-thought, but grounded in the physical world.
+RoClaw uses a closed-loop architecture where the bridge provides real-time pose telemetry (position, heading, target bearing, and distance) that gets injected into the VLM prompt alongside camera frames. The VLM fuses visual perception with sensor data to make precise motor decisions.
 
 ```mermaid
 graph LR
-    S["What do I see?"] -->|Scene Analysis| M["Have I been here?"]
-    M -->|Location Matching| N["Where should I go?"]
-    N -->|Navigation Planning| C["Motor Command"]
-    C -->|Bytecode Compiler| B["AA 04 B4 64 D4 FF"]
+    T["SENSOR DATA\nBearing: -15°\nDistance: 42cm"] --> VLM["Gemini\nRobotics-ER 1.6"]
+    CAM["Camera Frame"] --> VLM
+    VLM -->|">>> CALL: move_forward(180, 180)"| BC["Bytecode\nCompiler"]
+    BC -->|"AA 01 B4 B4 01 FF"| BRIDGE["mjswan Bridge"]
+    BRIDGE -->|"Pose + bearing"| T
 ```
 
-1. **Scene Analysis** — The VLM interprets the camera frame and extracts a location label, visual features, and navigation hints (exits, doors, paths).
-2. **Location Matching** — The VLM compares the current scene against all known nodes in the topological map.
-3. **Navigation Planning** — Given the semantic map, current location, and target, the VLM reasons about which motor action to take.
-4. **Bytecode Compilation** — The VLM's text command (`FORWARD 150 150`) compiles to a 6-byte motor frame (`AA 01 96 96 01 FF`).
+1. **Sensor Fusion** — Each VLM call receives a camera frame + SENSOR DATA block with exact target bearing (degrees) and distance (cm), computed from MuJoCo/real-world pose.
+2. **Directive Injection** — The telemetry system computes the optimal motor command (`>>> CALL:`) based on bearing angle and distance, with speed-tuned rotation hints (speed 50 for fine turns, 70 for large corrections, 180/100 for forward motion).
+3. **Bytecode Compilation** — The VLM's tool call (`move_forward(180, 180)`) compiles to a 6-byte motor frame (`AA 01 B4 B4 01 FF`).
+4. **Physics Confirmation** — The bridge tracks distance to target and confirms arrival when within radius (0.25m), independent of VLM output.
 
-The **Semantic Map** is the robot's working memory — a topological graph where nodes are locations (identified by visual features) and edges are navigation paths. It accumulates as the robot explores, enabling re-identification of visited places and multi-hop path planning.
+### Navigation Chain of Thought
+
+For topological navigation (multi-room planning), RoClaw also supports a semantic map with scene analysis:
+
+1. **Scene Analysis** — The VLM interprets the camera frame and extracts a location label, visual features, and navigation hints.
+2. **Location Matching** — The VLM compares the current scene against known nodes in the topological map.
+3. **Navigation Planning** — Given the semantic map, current location, and target, the VLM reasons about the motor action.
+4. **Bytecode Compilation** — The VLM's text command compiles to a 6-byte motor frame.
 
 ---
 
@@ -189,7 +207,7 @@ RoClaw includes a complete pipeline for distilling navigation knowledge from a l
 
 ### Camera-Based Trace Capture (Validated)
 
-The 3D simulation captures real VLM navigation traces as local `.md` files. Tested end-to-end: robot navigated 2.55m → 0.41m toward a red cube, trace written to `traces/sim3d/`, dream consolidation via skillos created new strategies.
+The 3D simulation captures real VLM navigation traces as local `.md` files. Tested end-to-end with Gemini Robotics-ER 1.6: robot navigated 78cm → 23cm to reach the red cube in 52 frames (137s), trace written to `traces/sim3d/`, dream consolidation via skillos created new strategies.
 
 ```bash
 # Start 3D sim stack (scene + bridge + browser)
@@ -239,19 +257,35 @@ npx tsx scripts/benchmark_distill.ts
 
 ---
 
-## Gemini Integration
+## Gemini Robotics-ER 1.6
 
-RoClaw uses **Gemini 3.1 Flash Lite** (`gemini-3.1-flash-lite-preview`) as the default VLM, with native structured tool calling for motor control. Tested and working perfectly with the full mjswan simulation pipeline — the VLM receives first-person camera frames, reasons about the scene, and outputs motor tool calls that compile to 6-byte bytecodes.
+RoClaw uses [**Gemini Robotics-ER 1.6**](https://ai.google.dev/gemini-api/docs/robotics) (`gemini-robotics-er-1.6-preview`) as the default VLM — Google DeepMind's embodied reasoning model purpose-built for robotics applications. [Read the announcement](https://deepmind.google/discover/blog/gemini-robotics-brings-ai-into-the-physical-world/).
+
+### Features Used in RoClaw
+
+| Feature | How RoClaw Uses It |
+|---------|-------------------|
+| **Spatial Grounding** | Object detection with `[ymin,xmin,ymax,xmax]` normalized 0-1000 bounding boxes and `[y,x]` pointing coordinates for scene analysis |
+| **Native Function Calling** | 7 motor control tools (`move_forward`, `rotate_cw`, `stop`, etc.) declared as structured function schemas — the model returns tool calls, not raw text |
+| **Embodied Reasoning** | Interprets first-person camera frames fused with SENSOR DATA (bearing, distance) to reason about physical navigation |
+| **Success Detection** | Physics-based arrival confirmation when robot is within target radius, combined with model's own assessment |
+| **Multi-View Reasoning** | Frame history (4 consecutive frames) gives the model temporal context for velocity, depth, and obstacle avoidance |
+| **Thinking Budget Control** | `thinkingBudget=0` for fast 2Hz motor control, `thinkingBudget=1024` for deep scene analysis and dream consolidation |
+| **Code Execution** | Enabled for Robotics-ER models — allows the model to write Python for distance computation, image analysis, and instrument reading |
+
+### Running with Gemini Robotics-ER 1.6
 
 ```bash
-# Default: Gemini 3.1 Flash Lite with tool calling
+# Default: Gemini Robotics-ER 1.6 with telemetry-guided navigation
 npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
 
 # Override model via .env
-GEMINI_MODEL=gemini-3.1-flash-lite-preview  # or gemini-3-flash-preview
+GEMINI_MODEL=gemini-robotics-er-1.6-preview       # Default — spatial grounding + embodied reasoning
+# GEMINI_MODEL=gemini-3.1-flash-lite-preview       # Alternative — fastest, lower quality
+# GEMINI_MODEL=gemini-2.5-flash                    # Alternative — general-purpose
 ```
 
-Also supports Qwen-VL via OpenRouter and local inference as alternatives. See [docs/08-Gemini-Robotics-Integration.md](docs/08-Gemini-Robotics-Integration.md) for the integration report.
+Also supports Qwen-VL via OpenRouter and local Ollama inference. See [docs/08-Gemini-Robotics-Integration.md](docs/08-Gemini-Robotics-Integration.md) for the full integration report.
 
 ---
 
@@ -262,8 +296,8 @@ RoClaw integrates with [mjswan](https://github.com/EvolvingAgentsLabs/mjswan) �
 ```mermaid
 flowchart LR
     B["Browser\nMuJoCo + Three.js"] <--"WS :9090"--> BR["mjswan Bridge"]
-    BR <--"UDP :4210"--> RS["RoClaw stack"]
-    BR --"MJPEG :8081"--> VL["VisionLoop"] --> VLM["VLM"]
+    BR <--"UDP :4210\nbytecodes + telemetry"--> RS["RoClaw stack"]
+    BR --"MJPEG :8081"--> VL["VisionLoop"] --> VLM["Gemini\nRobotics-ER 1.6"]
 ```
 
 ### Running the Simulation
@@ -289,7 +323,7 @@ npx tsx scripts/run_sim3d.ts --serve --gemini
 | Port | Protocol | Direction | Purpose |
 |------|----------|-----------|---------|
 | 9090 | WebSocket | Bridge <-> Browser | Motor commands + camera frames + pose |
-| 4210 | UDP | RoClaw stack <-> Bridge | 6/8-byte bytecode frames + telemetry JSON (500ms push) |
+| 4210 | UDP | RoClaw stack <-> Bridge | 6/8-byte bytecodes + telemetry JSON (pose, bearing, distance @ 500ms) |
 | 8081 | HTTP MJPEG | Bridge -> VisionLoop | First-person camera stream |
 | 8440 | HTTP | skillos bridge -> Tool server | Tool invocations + `GET /telemetry` via `--serve` mode |
 
@@ -346,7 +380,7 @@ The bridge (`roclaw_bridge.py`) translates skillos REST calls into tool invocati
 git clone https://github.com/EvolvingAgentsLabs/RoClaw.git
 cd RoClaw
 npm install
-cp .env.example .env    # Add your OpenRouter API key
+cp .env.example .env    # Add your GOOGLE_API_KEY (Gemini Robotics-ER 1.6)
 npm run type-check      # Verify TypeScript compiles
 npm test                # Run test suite
 ```
@@ -422,7 +456,7 @@ RoClaw/
 │   │   ├── roclaw_tools.ts      #   Tool handlers (explore, go_to, stop)
 │   │   └── planner.ts           #   Hierarchical goal decomposition
 │   ├── 2_qwen_cerebellum/       # LLM 2: VLM Motor Controller
-│   │   ├── vision_loop.ts       #   Camera → VLM → bytecode → ESP32 cycle (STOP-before-infer)
+│   │   ├── vision_loop.ts       #   Camera → telemetry+VLM → bytecode → ESP32 cycle
 │   │   ├── bytecode_compiler.ts #   VLM output → 6/8-byte binary frames (V1 + V2)
 │   │   ├── gemini_robotics.ts   #   Gemini inference backend + tool declarations + SSE streaming
 │   │   ├── ollama_inference.ts  #   Ollama inference backend for distilled models
@@ -466,7 +500,7 @@ The numbered folders encode the architecture:
 
 - **llmunix-core** — The cognitive core. Generic types, interfaces, and the section-based memory manager. Zero robotics dependencies.
 1. **Cortex** — The slow thinker. Receives goals from OpenClaw, decomposes them into multi-step plans using the Hierarchical Planner and learned strategies.
-2. **Cerebellum** — The fast reactor. Sees camera frames via Gemini 3.1 Flash Lite, outputs constraint-aware bytecode motor commands at 2 FPS. Sends STOP-before-inference to prevent coasting blind during VLM thinking. Monitors telemetry for stall detection.
+2. **Cerebellum** — The fast reactor. Sees camera frames via Gemini Robotics-ER 1.6, fuses vision with telemetry (pose, bearing, distance), outputs constraint-aware bytecode motor commands at 2 FPS. Monitors telemetry for stall detection and stuck/oscillation recovery.
 3. **LLMunix Memory** — The RoClaw adapter layer. Extends the core with robotics-specific behavior: bytecode entries, motor-specific prompts, the semantic map, and dream domain adapter.
 4. **Somatic Firmware** — The spinal cord. Bytecode-only UDP listener on ESP32-S3. MJPEG streamer on ESP32-CAM.
 5. **Hardware CAD** — The body. 3D-printable parts and assembly reference.
@@ -488,6 +522,6 @@ Apache 2.0 — Built by [Evolving Agents Labs](https://github.com/EvolvingAgents
 
 <div align="center">
 
-*A VLM sees through a camera. It reasons about the world. It outputs raw motor bytecodes. The robot moves. The experience is captured as markdown traces. skillos dreams consolidate them into strategy. Two repos, one cognitive architecture. This is RoClaw.*
+*Gemini Robotics-ER 1.6 sees through a camera. It fuses vision with telemetry. It outputs motor bytecodes. The robot moves. The experience is captured as markdown traces. skillos dreams consolidate them into strategy. Two repos, one cognitive architecture. This is RoClaw.*
 
 </div>
