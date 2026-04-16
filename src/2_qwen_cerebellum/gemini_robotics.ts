@@ -611,3 +611,29 @@ export function createGeminiInference(
   const adapter = new GeminiRoboticsInference(config);
   return adapter.createInferenceFunction();
 }
+
+/**
+ * Create a Gemini inference function configured for perception-only mode.
+ *
+ * Differences from the motor inference instance:
+ *   - useToolCalling: false (no function calling — outputs pure JSON)
+ *   - responseMimeType: 'application/json' (added to generationConfig)
+ *   - thinkingBudget: 1024 (higher for spatial reasoning)
+ *   - Same API key and model as the caller provides
+ *
+ * Used by SceneGraphPolicy and ShadowPerceptionLoop to get JSON bounding
+ * boxes from the OVERHEAD_SCENE_PROMPT without tool-call interference.
+ */
+export function createPerceptionInference(
+  config: Partial<GeminiInferenceConfig> & { apiKey: string },
+): InferenceFunction {
+  const adapter = new GeminiRoboticsInference({
+    ...config,
+    useToolCalling: false,
+    tools: [],
+    thinkingBudget: config.thinkingBudget ?? 1024,
+    maxOutputTokens: config.maxOutputTokens ?? 2048,
+    temperature: config.temperature ?? 0.1,
+  });
+  return adapter.createInferenceFunction();
+}

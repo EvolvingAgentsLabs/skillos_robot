@@ -14,6 +14,8 @@ import * as path from 'path';
 import { HierarchyLevel, TraceOutcome } from '../llmunix-core/types';
 import type { VisionLoop } from '../2_qwen_cerebellum/vision_loop';
 import type { InferenceFunction } from '../llmunix-core/interfaces';
+import type { SceneGraph } from './scene_graph';
+import { serializeSceneGraph, countCollisionPredictions } from './roclaw_dream_adapter';
 import { logger } from '../shared/logger';
 
 // =============================================================================
@@ -57,6 +59,10 @@ export class Sim3DTraceCollector {
   private outcomeReason: string = '';
   private collecting = false;
 
+  // Scene-graph snapshot support (PR-4)
+  private sceneGraph: SceneGraph | null = null;
+  private sceneSnapshots: Array<{ moment: string; timestamp: number; markdown: string; nodeCount: number; collisionsPredicted: number }> = [];
+
   constructor(config: Sim3DTraceCollectorConfig = {}) {
     this.tracesDir = config.tracesDir ?? path.join(process.cwd(), 'traces', 'sim3d');
     this.maxActions = config.maxActions ?? 200;
@@ -69,6 +75,15 @@ export class Sim3DTraceCollector {
    */
   setInferenceFunction(infer: InferenceFunction): void {
     this.infer = infer;
+  }
+
+  /**
+   * Set a SceneGraph reference for snapshot capture at key moments.
+   * When set, the trace will include scene-graph data in the YAML
+   * frontmatter and a snapshot section in the markdown body.
+   */
+  setSceneGraph(graph: SceneGraph): void {
+    this.sceneGraph = graph;
   }
 
   /**
@@ -155,7 +170,11 @@ export class Sim3DTraceCollector {
       `duration_ms: ${durationMs}`,
       `duration: "${Math.round(durationMs / 1000)}s"`,
       ...(this.outcomeReason ? [`outcome_reason: "${this.outcomeReason.replace(/"/g, '\\"')}"`] : []),
-      `tags: [sim3d, ${this.describeScene ? 'scene_described, ' : ''}frames:${this.frames.length}]`,
+      ...(this.sceneSnapshots.length > 0 ? [
+        `scene_nodes: ${this.sceneSnapshots[this.sceneSnapshots.length - 1].nodeCount}`,
+        `collisions_predicted: ${this.sceneSnapshots[this.sceneSnapshots.length - 1].collisionsPredicted}`,
+      ] : []),
+      `tags: [sim3d, ${this.describeScene ? 'scene_described, ' : ''}${this.sceneSnapshots.length > 0 ? 'scene_graph, ' : ''}frames:${this.frames.length}]`,
       '---',
       '',
       `# Sim3D Trace: ${this.goal}`,
@@ -173,6 +192,19 @@ export class Sim3DTraceCollector {
       lines.push(`**Action:** ${action.actionPayload}`);
       lines.push(`**Result:** ${action.result}`);
       lines.push('');
+    }
+
+    // Scene-graph snapshots (PR-4)
+    if (this.sceneSnapshots.length > 0) {
+      lines.push('## Scene Graph Snapshots');
+      lines.push('');
+      for (const snap of this.sceneSnapshots) {
+        lines.push(`### ${snap.moment} (${new Date(snap.timestamp).toISOString()})`);
+        lines.push(`Nodes: ${snap.nodeCount} | Collisions predicted: ${snap.collisionsPredicted}`);
+        lines.push('');
+        lines.push(snap.markdown);
+        lines.push('');
+      }
     }
 
     lines.push('---');
@@ -255,6 +287,7 @@ export class Sim3DTraceCollector {
       this.outcome = TraceOutcome.SUCCESS;
       this.outcomeReason = 'Arrival detected';
     }
+    this.snapshotSceneGraph('arrival');
   };
 
   private onStuck = (_vlmOutput: string): void => {
@@ -263,6 +296,7 @@ export class Sim3DTraceCollector {
       this.outcome = TraceOutcome.FAILURE;
       this.outcomeReason = 'Stuck: low entropy motor pattern';
     }
+    this.snapshotSceneGraph('stuck');
   };
 
   private onStepTimeout = (_elapsed: number): void => {
@@ -270,11 +304,28 @@ export class Sim3DTraceCollector {
       this.outcome = TraceOutcome.FAILURE;
       this.outcomeReason = 'Step timeout';
     }
+    this.snapshotSceneGraph('timeout');
   };
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Snapshot the current SceneGraph state at a key moment.
+   */
+  private snapshotSceneGraph(moment: string): void {
+    if (!this.sceneGraph) return;
+    const nodeCount = this.sceneGraph.size() - 1; // exclude robot
+    const collisionsPredicted = countCollisionPredictions(this.sceneGraph);
+    this.sceneSnapshots.push({
+      moment,
+      timestamp: Date.now(),
+      markdown: serializeSceneGraph(this.sceneGraph),
+      nodeCount,
+      collisionsPredicted,
+    });
+  }
 
   /**
    * Ask the VLM to describe what it sees in text form.

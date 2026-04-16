@@ -9,6 +9,8 @@
 import type { DreamDomainAdapter } from '../llmunix-core/interfaces';
 import type { ActionEntry } from '../llmunix-core/types';
 import type { HierarchyLevel } from '../llmunix-core/types';
+import type { SceneGraph, SceneNode } from './scene_graph';
+import { aabbIntersect } from './scene_graph';
 
 export const roClawDreamAdapter: DreamDomainAdapter = {
   compressActions(actions: ActionEntry[]): string {
@@ -80,3 +82,51 @@ Output ONLY the summary text (no JSON, no markdown headers).`,
     return `Existing strategy:\n${existing}\n\nNew trace evidence:\n${evidence}\n\nUpdate the strategy to incorporate this new evidence.`;
   },
 };
+
+// =============================================================================
+// Scene-Graph Serialization for Dream Traces (PR-4)
+// =============================================================================
+
+/**
+ * Serialize a SceneGraph snapshot into a markdown table suitable for
+ * inclusion in dream traces. The dream engine can reason about spatial
+ * layouts from this structured text.
+ *
+ * Format:
+ *   | Node | Label | X (cm) | Y (cm) | Heading (°) | Confidence |
+ *   |------|-------|--------|--------|-------------|------------|
+ *   | roclaw | RoClaw Robot | 45.0 | 100.0 | 0.0 | 1.00 |
+ */
+export function serializeSceneGraph(graph: SceneGraph): string {
+  const nodes = graph.getAllNodes();
+  if (nodes.length === 0) return '(empty scene graph)';
+
+  const lines: string[] = [
+    '| Node | Label | X (cm) | Y (cm) | Heading (°) | BBox (w×h×d) | Confidence |',
+    '|------|-------|--------|--------|-------------|--------------|------------|',
+  ];
+
+  for (const node of nodes) {
+    const x = node.position[0].toFixed(1);
+    const y = node.position[1].toFixed(1);
+    const heading = node.getHeadingDegrees().toFixed(1);
+    const bbox = `${node.boundingBox.w}×${node.boundingBox.h}×${node.boundingBox.d}`;
+    const conf = node.confidence.toFixed(2);
+    lines.push(`| ${node.id} | ${node.label} | ${x} | ${y} | ${heading} | ${bbox} | ${conf} |`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Count forward-collision predictions for all obstacle nodes.
+ * Returns the number of obstacles within a forward sweep of `distanceCm`.
+ */
+export function countCollisionPredictions(graph: SceneGraph, distanceCm: number = 30): number {
+  const swept = graph.robot.getForwardSweptAABB(distanceCm);
+  let count = 0;
+  for (const node of graph.getObstacles()) {
+    if (aabbIntersect(swept, node.getWorldAABB())) count++;
+  }
+  return count;
+}

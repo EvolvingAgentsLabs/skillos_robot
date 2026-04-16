@@ -15,6 +15,8 @@ import { UDPTransmitter } from './udp_transmitter';
 import { appendTrace, traceLogger } from '../3_llmunix_memory/trace_logger';
 import { HierarchyLevel, TraceOutcome, TraceSource } from '../3_llmunix_memory/trace_types';
 import type { InferenceFunction } from '../llmunix-core/interfaces';
+import type { PerceptionPolicy, TelemetrySnapshot } from './perception_policy';
+import { VLMMotorPolicy } from './vlm_motor_policy';
 
 // =============================================================================
 // Types
@@ -92,6 +94,9 @@ export class VisionLoop extends EventEmitter {
   // Telemetry injection: provides real-time pose/heading/target data for VLM prompt
   private telemetryProvider: (() => { pose: { x: number; y: number; h: number }; targetDist?: number; targetBearing?: number } | null) | null = null;
 
+  // PerceptionPolicy: strategy pattern for frame processing (PR-3)
+  private policy: PerceptionPolicy;
+
   // Stuck detection + step timeout
   private recentOpcodes: number[] = [];
   private static readonly STUCK_WINDOW = 12;
@@ -137,6 +142,11 @@ export class VisionLoop extends EventEmitter {
     this.transmitter = transmitter;
     this.infer = infer;
     this.minFrameIntervalMs = 1000 / (this.config.targetFPS || 2);
+
+    // Default policy: VLMMotorPolicy (preserves original behavior)
+    this.policy = new VLMMotorPolicy(compiler, infer, {
+      useToolCallingPrompt: !!this.config.useToolCallingPrompt,
+    });
 
     // Prompt-mode alignment validation (Constraint 10):
     // When useToolCallingPrompt is set, the inference backend MUST support tool calling.
@@ -235,6 +245,14 @@ export class VisionLoop extends EventEmitter {
    */
   setTelemetryProvider(provider: (() => { pose: { x: number; y: number; h: number }; targetDist?: number; targetBearing?: number } | null) | null): void {
     this.telemetryProvider = provider;
+  }
+
+  /**
+   * Replace the active perception policy. Swaps between VLMMotorPolicy (default)
+   * and SceneGraphPolicy (opt-in via RF_POLICY=scene_graph).
+   */
+  setPolicy(policy: PerceptionPolicy): void {
+    this.policy = policy;
   }
 
   /** Reset step timer — called when NavigationSession advances to a new step. */
@@ -553,13 +571,6 @@ export class VisionLoop extends EventEmitter {
     this.startInferenceHeartbeat();
 
     try {
-      let systemPrompt = this.config.useToolCallingPrompt
-        ? this.compiler.getToolCallingSystemPrompt(this.currentGoal)
-        : this.compiler.getSystemPrompt(this.currentGoal);
-      if (this.activeConstraints.length > 0) {
-        systemPrompt += '\n\nACTIVE CONSTRAINTS (from learned strategies):\n' +
-          this.activeConstraints.map(c => `- ${c}`).join('\n');
-      }
       const frameCount = this.frameHistory.length;
       const frameBase64s = this.frameHistory.map(f => f.base64Data);
 
@@ -570,69 +581,21 @@ export class VisionLoop extends EventEmitter {
         logger.debug('VisionLoop', `Frame buffer: ${frameCount} frames, age ${oldestAge}ms→${newestAge}ms`);
       }
 
-      // Build telemetry section if provider is available
-      let telemetrySection = '';
-      if (this.telemetryProvider) {
-        const telem = this.telemetryProvider();
-        if (telem) {
-          const headingDeg = Math.round(telem.pose.h * 180 / Math.PI);
-          const distCm = telem.targetDist != null ? (telem.targetDist * 100).toFixed(0) : null;
-          logger.info('VisionLoop', `Telemetry: pos=(${telem.pose.x.toFixed(3)},${telem.pose.y.toFixed(3)}) h=${headingDeg}° dist=${distCm ?? '?'}cm bearing=${telem.targetBearing?.toFixed(1) ?? '?'}°`);
-          telemetrySection = `\n\nSENSOR DATA (from odometry — trust these numbers):\n` +
-            `- Robot position: x=${telem.pose.x.toFixed(3)}, y=${telem.pose.y.toFixed(3)}\n` +
-            `- Robot heading: ${headingDeg}deg`;
-          if (distCm != null) {
-            telemetrySection += `\n- Target distance: ${distCm}cm`;
-          }
-          if (telem.targetBearing != null) {
-            const b = telem.targetBearing;
-            const absB = Math.abs(b);
-            // MuJoCo convention: positive bearing = CCW = LEFT, negative = CW = RIGHT
-            const dir = absB < 10 ? 'AHEAD'
-              : b > 0 ? `${absB.toFixed(0)}deg LEFT`
-              : `${absB.toFixed(0)}deg RIGHT`;
-            telemetrySection += `\n- Target bearing: ${dir}`;
+      // Build telemetry snapshot from provider
+      const telemetry: TelemetrySnapshot | null = this.telemetryProvider
+        ? this.telemetryProvider() ?? null
+        : null;
 
-            // Generate specific command. Key: degrees param is IGNORED by bridge — only speed
-            // matters. Each command coasts ~3s. Actual rotation ≈ (speed/255)*1.571*3 rad.
-            // Min speed 50 needed to overcome MuJoCo friction. speed 50 → ~53°/step, 70 → ~74°/step
-            if (distCm != null && parseInt(distCm) < 15) {
-              telemetrySection += `\n>>> CALL: stop()`;
-            } else if (absB <= 25) {
-              // Roughly aligned — drive forward (gentle curve corrects small offsets)
-              const speed = distCm != null && parseInt(distCm) < 40 ? 100 : 180;
-              telemetrySection += `\n>>> CALL: move_forward(${speed}, ${speed})`;
-            } else if (absB <= 70) {
-              // Medium correction: speed 50 → ~53° actual per step
-              if (b > 0) {
-                telemetrySection += `\n>>> CALL: rotate_ccw(${Math.round(absB)}, 50)`;
-              } else {
-                telemetrySection += `\n>>> CALL: rotate_cw(${Math.round(absB)}, 50)`;
-              }
-            } else {
-              // Large correction: speed 70 → ~74° actual per step
-              if (b > 0) {
-                telemetrySection += `\n>>> CALL: rotate_ccw(${Math.round(absB)}, 70)`;
-              } else {
-                telemetrySection += `\n>>> CALL: rotate_cw(${Math.round(absB)}, 70)`;
-              }
-            }
-          }
-        }
-      }
-
-      const userMessage = frameCount > 1
-        ? this.config.useToolCallingPrompt
-          ? `This is a video of the last ${frameCount} frames of movement (oldest→newest, spanning ${Date.now() - this.frameHistory[0].timestamp}ms). The goal is: ${this.currentGoal}. Analyze what you see and call the appropriate motor control function.${telemetrySection}`
-          : `This is a video of the last ${frameCount} frames of movement (oldest→newest, spanning ${Date.now() - this.frameHistory[0].timestamp}ms). The goal is: ${this.currentGoal}. Use the visual differences between frames to gauge your velocity and 3D surroundings. Output the next 6-byte motor command.${telemetrySection}`
-        : this.config.useToolCallingPrompt
-          ? `What do you see? Call the appropriate motor control function for the goal: ${this.currentGoal}${telemetrySection}`
-          : 'What do you see? Output the next motor command.';
-
-      const vlmOutput = await this.infer(systemPrompt, userMessage, frameBase64s);
+      // Delegate to the active perception policy
+      const result = await this.policy.processFrame(
+        frameBase64s,
+        this.currentGoal,
+        telemetry,
+        this.activeConstraints,
+      );
       this.statsData.inferenceCount++;
 
-      const bytecode = this.compiler.compile(vlmOutput);
+      const { bytecode, vlmOutput } = result;
       if (bytecode) {
         await this.transmitter.send(bytecode);
         this.statsData.bytecodesSent++;

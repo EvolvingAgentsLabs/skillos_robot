@@ -54,9 +54,9 @@ The critical path is the Cerebellum's reactive loop:
 
 At ~4 FPS, the robot can react to obstacles in real-time. This is fast enough for a robot moving at 4.7 cm/s — it travels less than 2cm between decisions.
 
-## The 4-Tier Cognitive Hierarchy
+## The 5-Tier Cognitive Hierarchy
 
-The dual-brain design extends into a 4-tier cognitive hierarchy that bridges high-level goals to reactive motor control:
+The dual-brain design extends into a 5-tier cognitive hierarchy that bridges high-level goals to reactive motor control, with a new Level 0 reflex layer:
 
 ```
 Level 1: MAIN GOAL (Cortex)           "Fetch me a drink"
@@ -69,10 +69,26 @@ Level 3: TACTICAL PLAN                "Door blocked. Route around couch."
     |                                   Strategy-informed navigation
     v
 Level 4: REACTIVE EXECUTION           Sub-second motor corrections (bytecodes)
-                                       Constraint-aware VisionLoop
+    |                                   Constraint-aware VisionLoop + PerceptionPolicy
+    v
+Level 0: REFLEX (ReflexGuard)         Pre-send collision veto
+                                       SceneGraph AABB sweep, <1ms, zero API calls
 ```
 
 The **Hierarchical Planner** (`src/1_openclaw_cortex/planner.ts`) sits in the Cortex and queries the memory system for strategies relevant to the current goal. It decomposes goals into multi-step plans, injecting strategy hints and negative constraints into each step. When no strategies exist yet, it gracefully falls through to the existing PoseMap/TopoMap navigation.
+
+### PerceptionPolicy (Strategy Pattern)
+
+The VisionLoop's frame processing is now delegated to a pluggable `PerceptionPolicy` interface (`src/2_qwen_cerebellum/perception_policy.ts`):
+
+- **VLMMotorPolicy** (default) — The original behavior: VLM sees camera + telemetry, outputs a tool call, compiles to bytecode. Zero behavior change from the pre-refactor code.
+- **SceneGraphPolicy** (opt-in via `RF_POLICY=scene_graph`) — VLM outputs JSON bounding boxes, `VisionProjector` maps to arena coordinates, `SceneGraph` tracks object positions, `ReactiveController` computes optimal motor command deterministically.
+
+Both policies produce identical 6-byte frames. All downstream logic (transmission, tracing, stuck detection, events) is unchanged.
+
+### ShadowPerceptionLoop
+
+The `ShadowPerceptionLoop` (`src/2_qwen_cerebellum/shadow_perception_loop.ts`) runs the scene-graph pipeline as a read-only sidecar alongside the active VisionLoop. Enabled via `RF_PERCEPTION_SHADOW=1`, it processes every Nth frame (default: every 2nd) through the full perception pipeline and emits `'divergence'` or `'agreement'` events comparing the ReactiveController's decision against the VLM's actual bytecode. This provides real divergence data to validate the scene-graph approach before using it as the production path.
 
 ## The Cortex
 

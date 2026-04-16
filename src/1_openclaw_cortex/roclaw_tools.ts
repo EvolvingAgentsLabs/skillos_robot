@@ -37,6 +37,8 @@ export interface ToolContext {
   infer: InferenceFunction;
   /** Trace source for memory fidelity (defaults to REAL_WORLD) */
   traceSource?: TraceSource;
+  /** Optional SceneGraph — present when RF_POLICY=scene_graph is active. */
+  sceneGraph?: import('../3_llmunix_memory/scene_graph').SceneGraph;
 }
 
 // Module-level singletons — avoids changing ToolContext interface
@@ -915,10 +917,23 @@ async function handleStatus(ctx: ToolContext): Promise<ToolResult> {
     const statusJson = response.toString();
     const status = JSON.parse(statusJson);
 
+    // Enrich with scene-graph data if available
+    const data: Record<string, unknown> = { ...status };
+    let sceneInfo = '';
+    if (ctx.sceneGraph) {
+      const nodeCount = ctx.sceneGraph.size() - 1; // exclude robot node
+      const collision = ctx.sceneGraph.predictForwardCollision(30);
+      data.sceneGraph = {
+        nodeCount,
+        collisionPrediction: collision ? { id: collision.id, label: collision.label } : null,
+      };
+      sceneInfo = `, scene nodes: ${nodeCount}${collision ? `, collision predicted: ${collision.label}` : ''}`;
+    }
+
     return {
       success: true,
-      message: `Robot status: position (${status.pose?.x?.toFixed(1)}, ${status.pose?.y?.toFixed(1)}), heading ${((status.pose?.h || 0) * 180 / Math.PI).toFixed(0)} deg, ${status.run ? 'moving' : 'idle'}`,
-      data: status,
+      message: `Robot status: position (${status.pose?.x?.toFixed(1)}, ${status.pose?.y?.toFixed(1)}), heading ${((status.pose?.h || 0) * 180 / Math.PI).toFixed(0)} deg, ${status.run ? 'moving' : 'idle'}${sceneInfo}`,
+      data,
     };
   } catch (error) {
     return {

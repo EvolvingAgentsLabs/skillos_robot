@@ -112,9 +112,40 @@ MuJoCo simulation has a friction threshold — speed values below ~50 (0.31 rad/
 | > 70° | `rotate_cw/ccw` | 70 | ~74°/step |
 | distance < 15cm | `stop` | — | — |
 
+## Perception-Only Inference Mode (Scene-Graph Pipeline)
+
+In addition to the default motor-control inference mode, RoClaw now supports a **perception-only** Gemini configuration via `createPerceptionInference()` (`src/2_qwen_cerebellum/gemini_robotics.ts`):
+
+| Setting | Motor Mode (default) | Perception Mode |
+|---------|---------------------|-----------------|
+| Tool calling | 7 motor tools declared | Disabled |
+| Output format | Structured `functionCall` | `responseMimeType: 'application/json'` |
+| Prompt | `TOOL_CALLING_SYSTEM_PROMPT` | `OVERHEAD_SCENE_PROMPT` |
+| Thinking budget | 0 (fast, reactive) | 1024 (spatial reasoning) |
+| Max output tokens | 1024 | 2048 |
+| Output | Motor tool call (e.g., `move_forward(180, 180)`) | JSON object list (`{objects: [{label, box_2d}]}`) |
+
+The perception inference feeds the **SceneGraphPolicy** pipeline: Gemini outputs bounding boxes, `VisionProjector` converts to arena cm, `SceneGraph` tracks objects, and `ReactiveController` generates motor commands deterministically. Both paths produce identical 6-byte bytecodes.
+
 ## Simulation Results
 
-### Latest Run (April 14, 2026)
+### Latest Run (April 16, 2026)
+
+| Metric | Value |
+|--------|-------|
+| Goal | "navigate to the red cube" |
+| Model | `gemini-robotics-er-1.6-preview` |
+| Policy | VLMMotorPolicy (default) |
+| Initial distance | 78cm |
+| Final distance | 25cm (within 0.25m radius) |
+| Total frames | 24 |
+| Duration | 85s |
+| Outcome | SUCCESS |
+| Confidence | 0.9 |
+
+This run validated the PerceptionPolicy refactor — the VLMMotorPolicy (extracted from the original VisionLoop code) produces byte-for-byte identical behavior.
+
+### Previous Run (April 14, 2026)
 
 | Metric | Value |
 |--------|-------|

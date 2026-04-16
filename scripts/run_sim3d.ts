@@ -33,6 +33,13 @@ import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_to
 import { TraceSource, TraceOutcome } from '../src/llmunix-core/types';
 import { TelemetryMonitor } from '../src/2_qwen_cerebellum/telemetry_monitor';
 import { Sim3DTraceCollector } from '../src/3_llmunix_memory/sim3d_trace_collector';
+import { SceneGraph } from '../src/3_llmunix_memory/scene_graph';
+import { ReactiveController } from '../src/1_openclaw_cortex/reactive_controller';
+import { ShadowPerceptionLoop } from '../src/2_qwen_cerebellum/shadow_perception_loop';
+import { ReflexGuard, attachReflexGuard } from '../src/2_qwen_cerebellum/reflex_guard';
+import { SceneGraphPolicy } from '../src/2_qwen_cerebellum/scene_graph_policy';
+import { createPerceptionInference } from '../src/2_qwen_cerebellum/gemini_robotics';
+import type { ArenaConfig } from '../src/2_qwen_cerebellum/vision_projector';
 
 dotenv.config();
 
@@ -66,6 +73,7 @@ let serveMode = false;
 let servePort = 8440;
 let collectTraces = true;
 let describeScene = false;
+let useSceneGraphPolicy = process.env.RF_POLICY === 'scene_graph';
 
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -100,6 +108,9 @@ for (let i = 0; i < args.length; i++) {
     case '--describe-scene':
       describeScene = true;
       break;
+    case '--scene-graph':
+      useSceneGraphPolicy = true;
+      break;
     case '--help':
       console.log(`Usage: npx tsx scripts/run_sim3d.ts [options]
 
@@ -114,6 +125,7 @@ Options:
   --serve-port <port>   Port for the HTTP tool server (default: 8440)
   --no-traces           Disable trace file collection
   --describe-scene      Ask VLM to describe camera scenes as text (gap analysis)
+  --scene-graph         Use SceneGraphPolicy (VLM perceives, local controller decides)
   --help                Show this help message
 
 Examples:
@@ -301,9 +313,69 @@ async function main(): Promise<void> {
     });
   }
 
+  // 6a. Arena config for scene-graph pipeline
+  const ARENA: ArenaConfig = {
+    widthCm: parseInt(process.env.ARENA_WIDTH_CM || '300', 10),
+    heightCm: parseInt(process.env.ARENA_HEIGHT_CM || '200', 10),
+  };
+
+  // 6b. Scene-graph instances (shared by shadow loop, policy, and reflex guard)
+  let sceneGraph: SceneGraph | undefined;
+
+  // 6c. Shadow Perception Loop (PR-1) — read-only sidecar that logs divergence
+  if (process.env.RF_PERCEPTION_SHADOW === '1') {
+    sceneGraph = sceneGraph ?? new SceneGraph();
+    const controller = new ReactiveController();
+    const shadow = new ShadowPerceptionLoop(sceneGraph, controller, compiler, infer, ARENA);
+    shadow.setGoalText(goal);
+
+    // Wire telemetry
+    shadow.setTelemetryProvider(telemetryMonitor);
+
+    // Hook into VisionLoop bytecode events
+    visionLoop.on('bytecode', (bytecode: Buffer, _vlmOutput: string) => {
+      const frame = visionLoop.getLatestFrameBase64();
+      if (frame) shadow.onFrame(frame, bytecode);
+    });
+
+    shadow.on('divergence', (info: Record<string, unknown>) => {
+      logger.info('Sim3D', `Shadow divergence: ${info.action} vs VLM (${info.vlmHex})`, info);
+    });
+
+    logger.info('Sim3D', 'Shadow Perception Loop enabled (RF_PERCEPTION_SHADOW=1)');
+  }
+
+  // 6d. Reflex Guard (shadow or active depending on env)
+  if (process.env.RF_REFLEX_ENABLED || process.env.RF_PERCEPTION_SHADOW === '1') {
+    sceneGraph = sceneGraph ?? new SceneGraph();
+    const reflexMode = useSceneGraphPolicy ? 'active' as const : 'shadow' as const;
+    const guard = new ReflexGuard(sceneGraph, { mode: reflexMode });
+    const detach = attachReflexGuard(transmitter, guard);
+    logger.info('Sim3D', `Reflex Guard attached (mode: ${reflexMode})`);
+  }
+
+  // 6e. Scene Graph Policy (PR-3) — replaces VLM motor policy
+  if (useSceneGraphPolicy && useGemini) {
+    sceneGraph = sceneGraph ?? new SceneGraph();
+    const googleApiKey = process.env.GOOGLE_API_KEY!;
+    const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
+    const perceptionInfer = createPerceptionInference({
+      apiKey: googleApiKey,
+      model: geminiModel,
+    });
+    const controller = new ReactiveController();
+    const sgPolicy = new SceneGraphPolicy(
+      sceneGraph, controller, perceptionInfer, compiler, ARENA,
+    );
+    visionLoop.setPolicy(sgPolicy);
+    logger.info('Sim3D', `SceneGraphPolicy active (model: ${geminiModel})`);
+  } else if (useSceneGraphPolicy && !useGemini) {
+    logger.warn('Sim3D', '--scene-graph requires --gemini (Gemini API key needed for perception inference)');
+  }
+
   // 6. Build ToolContext and dispatch via handleTool
   //    Tag traces as SIM_3D: physics-based simulation with rendered frames + real VLM
-  const ctx: ToolContext = { compiler, transmitter, visionLoop, infer, traceSource: TraceSource.SIM_3D };
+  const ctx: ToolContext = { compiler, transmitter, visionLoop, infer, traceSource: TraceSource.SIM_3D, sceneGraph };
 
   // ===================================================================
   // SERVE MODE — HTTP tool server for external callers (e.g. skillos)

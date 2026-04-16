@@ -37,7 +37,7 @@ RoClaw is the physical embodiment layer of a three-part cognitive ecosystem. It 
 
 ## The Dual-Brain Architecture
 
-RoClaw uses a biological dual-brain design: a slow-thinking **Cortex** for strategy and a fast-reacting **Cerebellum** for motor control.
+RoClaw uses a biological dual-brain design: a slow-thinking **Cortex** for strategy and a fast-reacting **Cerebellum** for motor control. The Cerebellum supports two **pluggable perception policies** — the VLM can drive motors directly (default), or a scene-graph pipeline can convert camera frames into a 3D spatial model and use deterministic reactive control.
 
 ```mermaid
 graph TD
@@ -47,9 +47,17 @@ graph TD
     BRIDGE -->|"HTTP :8440 (sim)"| TOOLSRV["run_sim3d.ts --serve"]
     CORTEX -->|"Plan: hallway → kitchen"| PLANNER[Hierarchical Planner]
     TOOLSRV -->|handleTool| PLANNER
-    PLANNER -->|"Strategy-informed goal"| CEREBELLUM[2. Cerebellum — Gemini Robotics-ER 1.6]
-    CEREBELLUM -->|"Sees camera + telemetry"| COMPILE[Bytecode Compiler]
-    COMPILE -->|"AA 01 64 64 CB FF"| ESP[ESP32-S3 / mjswan Bridge]
+    PLANNER -->|"Strategy-informed goal"| CEREBELLUM[2. Cerebellum — VisionLoop]
+
+    subgraph CEREBELLUM_DETAIL ["Perception Policies (pluggable)"]
+        VLM_POLICY["VLMMotorPolicy (default)\nGemini → tool call → bytecode"]
+        SG_POLICY["SceneGraphPolicy (opt-in)\nGemini JSON → SceneGraph → ReactiveController → bytecode"]
+    end
+
+    CEREBELLUM --> VLM_POLICY
+    CEREBELLUM --> SG_POLICY
+    VLM_POLICY -->|"AA 01 64 64 CB FF"| ESP[ESP32-S3 / mjswan Bridge]
+    SG_POLICY -->|"AA 01 64 64 CB FF"| ESP
     ESP -->|"Robot moves"| WORLD((Physical World / MuJoCo Sim))
     ESP -->|"Pose + bearing + distance"| TELEM[Telemetry Monitor]
     TELEM -->|"SENSOR DATA injection"| CEREBELLUM
@@ -86,6 +94,69 @@ For topological navigation (multi-room planning), RoClaw also supports a semanti
 2. **Location Matching** — The VLM compares the current scene against known nodes in the topological map.
 3. **Navigation Planning** — Given the semantic map, current location, and target, the VLM reasons about the motor action.
 4. **Bytecode Compilation** — The VLM's text command compiles to a 6-byte motor frame.
+
+---
+
+## Scene-Graph Perception Pipeline
+
+RoClaw supports a second perception mode where the VLM becomes a pure **perceiver** — it returns JSON bounding boxes instead of motor commands, and deterministic local code handles all motor decisions. Both paths produce identical 6-byte bytecodes; everything downstream is unchanged.
+
+```mermaid
+flowchart LR
+    CAM["Camera Frame"] --> GEMINI["Gemini\n(perception mode)\nJSON bounding boxes"]
+    GEMINI --> PARSER["SceneResponseParser\n{objects: [{label, box_2d}]}"]
+    PARSER --> PROJ["VisionProjector\n0-1000 coords → arena cm"]
+    PROJ --> SG["SceneGraph\n3D spatial memory"]
+    SG --> RC["ReactiveController\nbearing + distance → opcode"]
+    RC --> BC["6-byte bytecode"]
+```
+
+### How It Works
+
+1. **Perception**: Gemini analyzes the overhead camera frame and returns structured JSON with object labels and `[ymin, xmin, ymax, xmax]` bounding boxes (normalized 0-1000).
+2. **Projection**: `VisionProjector` converts normalized coordinates to arena centimeters and updates the `SceneGraph` — a 3D geometric spatial memory with quaternion rotations, AABB collision detection, and persistence.
+3. **Decision**: `ReactiveController` computes bearing and distance from robot to target, then selects the optimal motor command (rotate to align, move forward, slow approach, stop on arrival).
+4. **Compilation**: The controller's decision is encoded as a standard 6-byte bytecode frame — identical format to VLM-generated commands.
+
+### Two Perception Policies
+
+The `VisionLoop` delegates frame processing to a pluggable `PerceptionPolicy`:
+
+| Policy | How It Works | When to Use |
+|--------|-------------|-------------|
+| **VLMMotorPolicy** (default) | VLM sees camera + telemetry → outputs tool call → compiles to bytecode | Production, general navigation |
+| **SceneGraphPolicy** (opt-in) | VLM outputs JSON objects → SceneGraph → ReactiveController → bytecode | Deterministic control, obstacle-dense environments |
+
+Switch policies at runtime:
+```bash
+# Default: VLM drives motors directly (identical to previous behavior)
+npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
+
+# Scene-graph policy: deterministic reactive control
+RF_POLICY=scene_graph npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
+```
+
+### Shadow Perception Loop
+
+Before committing to the scene-graph path, validate it as a read-only sidecar:
+
+```bash
+# Shadow mode: runs scene-graph pipeline alongside VLM, logs divergence, never transmits
+RF_PERCEPTION_SHADOW=1 npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
+```
+
+The `ShadowPerceptionLoop` processes every Nth frame through the full scene-graph pipeline and compares what the `ReactiveController` *would have* commanded vs what the VLM actually sent. Divergence events are logged with detailed metrics (action, bearing, distance, object count).
+
+### ReflexGuard (Collision Veto)
+
+When the SceneGraph is available, the `ReflexGuard` provides a pre-send collision check:
+
+```bash
+# Enable reflex guard (shadow mode: logs vetoes, always passes through)
+RF_REFLEX_ENABLED=1 npx tsx scripts/run_sim3d.ts --gemini --goal "navigate to the red cube"
+```
+
+In **active** mode, it vetoes forward-motion frames that would collide with obstacles within a configurable sweep distance (default 30cm + 5cm safety margin), substituting a STOP frame. In **shadow** mode, it only logs what it would have vetoed.
 
 ---
 
@@ -135,19 +206,22 @@ V2 (8 bytes): [0xAA][SEQ][OPCODE][PARAM_L][PARAM_R][FLAGS][CHECKSUM][0xFF]
 
 ---
 
-## 4-Tier Cognitive Architecture
+## 5-Tier Cognitive Architecture
 
-A biologically-inspired hierarchical planning system that decomposes high-level goals into reactive motor commands:
+A biologically-inspired hierarchical system that decomposes high-level goals into reactive motor commands, with a new Tier-0 reflex layer for collision avoidance:
 
 ```mermaid
 flowchart TD
     L1["**Level 1: MAIN GOAL (Cortex)**\nFetch me a drink\nQueries strategies, decomposes into sub-goals"]
     L2["**Level 2: STRATEGIC PLAN**\nTraverse hallway → kitchen\nUses route strategies from memory"]
     L3["**Level 3: TACTICAL PLAN**\nDoor blocked. Route around couch.\nStrategy-informed navigation"]
-    L4["**Level 4: REACTIVE EXECUTION**\nSub-second motor corrections (bytecodes)\nConstraint-aware VisionLoop"]
+    L4["**Level 4: REACTIVE EXECUTION**\nSub-second motor corrections (bytecodes)\nConstraint-aware VisionLoop + PerceptionPolicy"]
+    L0["**Level 0: REFLEX (ReflexGuard)**\nPre-send collision veto\nSceneGraph forward-sweep AABB check"]
 
-    L1 --> L2 --> L3 --> L4
+    L1 --> L2 --> L3 --> L4 --> L0
 ```
+
+The new **Level 0 (Reflex)** layer sits between bytecode compilation and transmission. When the SceneGraph is available, the `ReflexGuard` checks each outgoing motor frame against predicted forward collisions and can veto dangerous commands by substituting a STOP frame — all in <1ms with zero API calls.
 
 ---
 
@@ -184,7 +258,7 @@ RoClaw/
 │   └── level_4_motor/  # Reactive motor strategies
 ```
 
-Each trace is a `.md` file with YAML frontmatter (timestamp, goal, outcome, source, fidelity) and a narrative body. Strategies follow the same format with trigger goals, steps, and confidence scores.
+Each trace is a `.md` file with YAML frontmatter (timestamp, goal, outcome, source, fidelity) and a narrative body. When the SceneGraph is active, traces also include `scene_nodes` and `collisions_predicted` in the frontmatter, plus a **Scene Graph Snapshots** section with markdown tables of node positions at key moments (arrival, stuck, timeout). Strategies follow the same format with trigger goals, steps, and confidence scores.
 
 ---
 
@@ -453,19 +527,28 @@ RoClaw/
 │   │   ├── memory_manager.ts    #   Section-based memory manager
 │   │   └── utils.ts             #   extractJSON, parseJSONSafe
 │   ├── 1_openclaw_cortex/       # LLM 1: OpenClaw Gateway Node
-│   │   ├── roclaw_tools.ts      #   Tool handlers (explore, go_to, stop)
-│   │   └── planner.ts           #   Hierarchical goal decomposition
+│   │   ├── roclaw_tools.ts      #   Tool handlers (explore, go_to, stop) + SceneGraph status
+│   │   ├── planner.ts           #   Hierarchical goal decomposition
+│   │   └── goal_resolver.ts     #   Text goal → SceneGraph node fuzzy matcher
 │   ├── 2_qwen_cerebellum/       # LLM 2: VLM Motor Controller
-│   │   ├── vision_loop.ts       #   Camera → telemetry+VLM → bytecode → ESP32 cycle
+│   │   ├── vision_loop.ts       #   Camera → PerceptionPolicy → bytecode → ESP32 cycle
+│   │   ├── perception_policy.ts #   Strategy pattern interface for frame processing
+│   │   ├── vlm_motor_policy.ts  #   Default policy: VLM → tool call → bytecode
+│   │   ├── scene_graph_policy.ts #  Opt-in policy: JSON → SceneGraph → ReactiveController
+│   │   ├── scene_response_parser.ts # Gemini JSON bounding-box parser
+│   │   ├── shadow_perception_loop.ts # Read-only sidecar for divergence analysis
 │   │   ├── bytecode_compiler.ts #   VLM output → 6/8-byte binary frames (V1 + V2)
-│   │   ├── gemini_robotics.ts   #   Gemini inference backend + tool declarations + SSE streaming
+│   │   ├── gemini_robotics.ts   #   Gemini inference + perception-only factory
 │   │   ├── ollama_inference.ts  #   Ollama inference backend for distilled models
 │   │   ├── udp_transmitter.ts   #   UDP transport with V2 ACK support
 │   │   └── telemetry_monitor.ts #   Telemetry parsing + stall detection
 │   ├── 3_llmunix_memory/        # RoClaw memory adapter layer
 │   │   ├── semantic_map.ts      #   VLM-powered topological graph
+│   │   ├── scene_graph.ts       #   3D geometric spatial memory (AABB, collisions)
 │   │   ├── strategy_store.ts    #   Strategy management (local .md files)
 │   │   ├── trace_logger.ts      #   Trace logging with bytecode support
+│   │   ├── sim3d_trace_collector.ts # Frame capture + scene-graph snapshots
+│   │   ├── roclaw_dream_adapter.ts  # Dream prompts + scene-graph serialization
 │   │   ├── strategies/          #   Hierarchical strategies (4 levels + seeds)
 │   │   └── dream_simulator/     #   Text-based dream simulation
 │   │       ├── text_scene.ts        # TextSceneSimulator + 5 prebuilt scenarios
@@ -489,9 +572,10 @@ RoClaw/
 └── __tests__/
     ├── llmunix-core/            # Core tests
     ├── mjswan-bridge/           # Bridge translation tests
-    ├── cortex/                  # Planner + tool handler tests
-    ├── cerebellum/              # Vision loop, compiler, UDP tests
-    ├── memory/                  # Strategy store, semantic map tests
+    ├── cortex/                  # Planner, tool handler, goal resolver tests
+    ├── cerebellum/              # Vision loop, compiler, policies, shadow loop tests
+    ├── integration/             # Policy-switch integration tests
+    ├── memory/                  # Strategy store, semantic map, dream scene-graph tests
     ├── dream/                   # Dream engine tests
     └── navigation/              # E2E tests (text, vision, outdoor, synthetic)
 ```
@@ -500,8 +584,8 @@ The numbered folders encode the architecture:
 
 - **llmunix-core** — The cognitive core. Generic types, interfaces, and the section-based memory manager. Zero robotics dependencies.
 1. **Cortex** — The slow thinker. Receives goals from OpenClaw, decomposes them into multi-step plans using the Hierarchical Planner and learned strategies.
-2. **Cerebellum** — The fast reactor. Sees camera frames via Gemini Robotics-ER 1.6, fuses vision with telemetry (pose, bearing, distance), outputs constraint-aware bytecode motor commands at 2 FPS. Monitors telemetry for stall detection and stuck/oscillation recovery.
-3. **LLMunix Memory** — The RoClaw adapter layer. Extends the core with robotics-specific behavior: bytecode entries, motor-specific prompts, the semantic map, and dream domain adapter.
+2. **Cerebellum** — The fast reactor. Processes camera frames through a pluggable `PerceptionPolicy`: either VLM-direct motor commands (default) or scene-graph-driven reactive control (opt-in). Both paths fuse vision with telemetry and output constraint-aware bytecode at 2 FPS. Includes `ReflexGuard` for collision veto and `ShadowPerceptionLoop` for divergence analysis.
+3. **LLMunix Memory** — The RoClaw adapter layer. Extends the core with robotics-specific behavior: 3D `SceneGraph` spatial memory, scene-graph-enriched traces, bytecode entries, motor-specific prompts, the semantic map, and dream domain adapter.
 4. **Somatic Firmware** — The spinal cord. Bytecode-only UDP listener on ESP32-S3. MJPEG streamer on ESP32-CAM.
 5. **Hardware CAD** — The body. 3D-printable parts and assembly reference.
 
@@ -522,6 +606,6 @@ Apache 2.0 — Built by [Evolving Agents Labs](https://github.com/EvolvingAgents
 
 <div align="center">
 
-*Gemini Robotics-ER 1.6 sees through a camera. It fuses vision with telemetry. It outputs motor bytecodes. The robot moves. The experience is captured as markdown traces. skillos dreams consolidate them into strategy. Two repos, one cognitive architecture. This is RoClaw.*
+*Gemini Robotics-ER 1.6 sees through a camera. It can drive motors directly, or perceive objects and let a reactive controller decide. Both paths produce the same 6-byte bytecodes. The robot moves. The experience — including 3D scene-graph snapshots — is captured as markdown traces. skillos dreams consolidate them into strategy. Two repos, one cognitive architecture. This is RoClaw.*
 
 </div>
