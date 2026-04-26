@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 28"
+     role="img" aria-label="divider">
+  <defs>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.5" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="strongGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="g1"/>
+      <feGaussianBlur stdDeviation="6" result="g2"/>
+      <feMerge>
+        <feMergeNode in="g2"/><feMergeNode in="g1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="scan" x="0" y="0" width="3" height="3" patternUnits="userSpaceOnUse">
+      <rect width="3" height="1" fill="#00ff7f" opacity="0.05"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="28" fill="#000000"/>
+  <text x="0" y="20" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14" fill="#4ade80"
+        opacity="0.65" filter="url(#glow)">
+    ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ 
+  </text>
+  <text x="0" y="20" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14" fill="#00ff7f"
+        filter="url(#glow)">
+    <tspan x="0">▸</tspan><tspan dx="6">──────────────────</tspan>
+    <tspan dx="8">[ MCP ]</tspan><tspan dx="8">──────────────────</tspan>
+    <tspan dx="8">▸</tspan>
+  </text>
+  <text x="0" y="20" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14" fill="#bff7ff"
+        filter="url(#glow)">
+    <tspan>▰▰▰</tspan>
+    <animate attributeName="x" values="-40;1290;-40" dur="5.5s"
+             repeatCount="indefinite"/>
+  </text>
+  <text x="0" y="20" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14" fill="#bbf7d0"
+        opacity="0.6">
+    <tspan>·</tspan>
+    <animate attributeName="x" values="-10;1280;-10" dur="3.2s"
+             repeatCount="indefinite"/>
+  </text>
+</svg>

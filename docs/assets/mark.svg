@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"
+     role="img" aria-label="RoClaw mark">
+  <defs>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.5" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="strongGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="g1"/>
+      <feGaussianBlur stdDeviation="6" result="g2"/>
+      <feMerge>
+        <feMergeNode in="g2"/><feMergeNode in="g1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="scan" x="0" y="0" width="3" height="3" patternUnits="userSpaceOnUse">
+      <rect width="3" height="1" fill="#00ff7f" opacity="0.05"/>
+    </pattern>
+  </defs>
+  <rect width="96" height="96" fill="#000000"/>
+  <text x="48" y="24" text-anchor="middle" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14"
+        fill="#4ade80" filter="url(#glow)">┌──────┐</text>
+  <text x="48" y="44" text-anchor="middle" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14"
+        fill="#4ade80" filter="url(#glow)">│</text>
+  <text x="48" y="44" text-anchor="middle" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="16"
+        fill="#00ff7f" filter="url(#strongGlow)" font-weight="700">
+    ◈
+    <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s"
+             repeatCount="indefinite"/>
+  </text>
+  <text x="48" y="60" text-anchor="middle" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14"
+        fill="#4ade80" filter="url(#glow)">│</text>
+  <text x="48" y="60" text-anchor="middle" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14"
+        fill="#bff7ff" filter="url(#glow)">●</text>
+  <text x="48" y="76" text-anchor="middle" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="14"
+        fill="#4ade80" filter="url(#glow)">└──────┘</text>
+</svg>
