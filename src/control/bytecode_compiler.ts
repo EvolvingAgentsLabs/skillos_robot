@@ -298,21 +298,6 @@ export class BytecodeCompiler {
   }
 
   /**
-   * Get the system prompt for Qwen-VL that teaches it to output bytecode.
-   */
-  getSystemPrompt(goal: string): string {
-    return BYTECODE_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
-  }
-
-  /**
-   * Get the system prompt for tool-calling VLMs (e.g. Gemini Robotics-ER).
-   * Describes navigation using function names instead of hex bytecodes.
-   */
-  getToolCallingSystemPrompt(goal: string): string {
-    return TOOL_CALLING_SYSTEM_PROMPT.replace('{{GOAL}}', goal);
-  }
-
-  /**
    * Get the system prompt for text-scene simulation (no video/images).
    * Describes the two-pass scene format and includes chain-of-thought,
    * few-shot examples, and explicit decision rules.
@@ -472,79 +457,7 @@ export class BytecodeCompiler {
   }
 }
 
-// =============================================================================
-// System Prompt for Qwen-VL
-// =============================================================================
-
-const BYTECODE_SYSTEM_PROMPT = `You are a robot motor controller with video perception. You see through the robot's camera and output motor commands.
-
-GOAL: {{GOAL}}
-
-VIDEO INPUT: You receive a rolling sequence of camera frames (oldest→newest) representing the last few seconds of movement. This is effectively a short video clip.
-- Compare frames to perceive your velocity, direction of travel, and momentum.
-- Use parallax between frames to estimate depth and 3D spatial layout.
-- If objects are growing larger across frames, you are approaching them.
-- If the scene is shifting left, you are turning right (and vice versa).
-
-OUTPUT FORMAT: Output ONLY a 6-byte hex command. Nothing else. No explanation.
-
-COMMAND REFERENCE:
-AA 01 LL RR CC FF  — Move forward (LL=left speed, RR=right speed, 00-FF)
-AA 02 LL RR CC FF  — Move backward
-AA 03 LL RR CC FF  — Turn left (differential)
-AA 04 LL RR CC FF  — Turn right (differential)
-AA 05 DD SS CC FF  — Rotate clockwise (DD=degrees, SS=speed)
-AA 06 DD SS CC FF  — Rotate counter-clockwise
-AA 07 00 00 07 FF  — Stop
-
-CC = checksum (XOR of bytes 1-3)
-
-NAVIGATION STRATEGY:
-- If the path ahead is clear and the goal is visible, MOVE FORWARD.
-- If the path ahead is blocked (wall, obstacle filling most of the view, or very dark/close surface), ROTATE to scan for the goal or a clear path. Do NOT move forward into walls.
-- If you see the target object (e.g. the red cube), turn toward it and approach.
-- STOP only when you have arrived at the goal (target object is very close and centered).
-
-EXAMPLES:
-- See clear path ahead → AA 01 80 80 01 FF
-- Wall ahead, need to scan → AA 05 5A 80 DB FF
-- See wall on left → AA 04 60 80 E4 FF
-- See obstacle close, rotate to find path → AA 06 5A 80 DC FF
-- Target visible on the right → AA 04 40 80 C4 FF
-- Arrived at target (very close) → AA 07 00 00 07 FF
-- Need to turn around → AA 05 B4 80 31 FF
-
-Your response must be EXACTLY 6 hex bytes separated by spaces.`;
-
-// =============================================================================
-// Tool-Calling System Prompt (for Gemini Robotics-ER with function calling)
-// =============================================================================
-
-const TOOL_CALLING_SYSTEM_PROMPT = `You are a robot motor controller. You receive SENSOR DATA with exact target bearing and distance. Execute the recommended command.
-
-GOAL: {{GOAL}}
-
-RULE: The user message contains a ">>> CALL:" line with the exact function call to make. Execute that call with those exact parameters. Do NOT change the speed or degrees values.
-
-AVAILABLE ACTIONS:
-- move_forward(speed_l, speed_r)
-- move_backward(speed_l, speed_r)
-- turn_left(speed_l, speed_r)
-- turn_right(speed_l, speed_r)
-- rotate_cw(degrees, speed)
-- rotate_ccw(degrees, speed)
-- stop()
-
-OUTPUT: Call exactly ONE tool function per response matching the >>> CALL: directive.`;
-
-// =============================================================================
-// GBNF Grammar (for grammar-constrained decoding)
-// =============================================================================
-
-/**
- * GBNF grammar that forces the VLM to output exactly 6 hex bytes.
- * Use with llama.cpp or compatible servers that support grammar-constrained decoding.
- */
+// Removed: BYTECODE_SYSTEM_PROMPT, TOOL_CALLING_SYSTEM_PROMPT (Phase 3 — VLMMotorPolicy deprecated)
 // =============================================================================
 // ISA v1.1 — V2 Frame Format (8 bytes with sequence numbers + ACK)
 // =============================================================================

@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   // 4. Initialize vision loop (rolling video buffer for temporal/3D perception)
   const cameraUrl = `http://${config.cameraHost}:${config.cameraPort}${config.cameraPath}`;
   const visionLoop = new VisionLoop(
-    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: true },
+    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize },
     compiler,
     transmitter,
     infer,

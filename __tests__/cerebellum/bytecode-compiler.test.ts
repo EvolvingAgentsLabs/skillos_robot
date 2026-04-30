@@ -581,19 +581,6 @@ describe('BytecodeCompiler', () => {
     });
   });
 
-  describe('getSystemPrompt', () => {
-    test('includes the goal', () => {
-      const prompt = compiler.getSystemPrompt('explore the room');
-      expect(prompt).toContain('explore the room');
-    });
-
-    test('includes opcode reference', () => {
-      const prompt = compiler.getSystemPrompt('test');
-      expect(prompt).toContain('AA 01');
-      expect(prompt).toContain('Move forward');
-    });
-  });
-
   describe('getOverheadScenePrompt', () => {
     test('substitutes the goal placeholder', () => {
       const prompt = compiler.getOverheadScenePrompt('find the red cube');

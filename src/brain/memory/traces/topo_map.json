@@ -17,8 +17,8 @@
         "passage to the left"
       ],
       "visitCount": 1,
-      "firstVisited": 1777591771178,
-      "lastVisited": 1777591771178,
+      "firstVisited": 1777592900573,
+      "lastVisited": 1777592900573,
       "position": {
         "x": 0,
         "y": 150,
@@ -45,8 +45,8 @@
         "passage to the left"
       ],
       "visitCount": 1,
-      "firstVisited": 1777591771178,
-      "lastVisited": 1777591771178,
+      "firstVisited": 1777592900574,
+      "lastVisited": 1777592900574,
       "position": {
         "x": 100,
         "y": 150,
@@ -72,8 +72,8 @@
         "passage to the left"
       ],
       "visitCount": 1,
-      "firstVisited": 1777591771179,
-      "lastVisited": 1777591771179,
+      "firstVisited": 1777592900574,
+      "lastVisited": 1777592900574,
       "position": {
         "x": -100,
         "y": 150,
@@ -97,8 +97,8 @@
         "passage to the left"
       ],
       "visitCount": 1,
-      "firstVisited": 1777591771179,
-      "lastVisited": 1777591771179,
+      "firstVisited": 1777592900574,
+      "lastVisited": 1777592900574,
       "position": {
         "x": 0,
         "y": 300,
@@ -124,8 +124,8 @@
         "passage to the left"
       ],
       "visitCount": 1,
-      "firstVisited": 1777591771180,
-      "lastVisited": 1777591771180,
+      "firstVisited": 1777592900575,
+      "lastVisited": 1777592900575,
       "position": {
         "x": 50,
         "y": 0,
@@ -141,7 +141,7 @@
       "action": "turned right into kitchen",
       "estimatedSteps": 0,
       "traversalCount": 1,
-      "lastTraversed": 1777591771178
+      "lastTraversed": 1777592900574
     },
     {
       "from": "loc_8",
@@ -149,7 +149,7 @@
       "action": "returned to hallway and turned left",
       "estimatedSteps": 0,
       "traversalCount": 1,
-      "lastTraversed": 1777591771179
+      "lastTraversed": 1777592900574
     },
     {
       "from": "loc_9",
@@ -157,7 +157,7 @@
       "action": "returned to hallway and went to end",
       "estimatedSteps": 0,
       "traversalCount": 1,
-      "lastTraversed": 1777591771179
+      "lastTraversed": 1777592900574
     },
     {
       "from": "loc_10",
@@ -165,7 +165,7 @@
       "action": "returned to hallway and entered bathroom",
       "estimatedSteps": 0,
       "traversalCount": 1,
-      "lastTraversed": 1777591771180
+      "lastTraversed": 1777592900575
     }
   ],
   "currentNodeId": "loc_11"

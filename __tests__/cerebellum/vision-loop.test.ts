@@ -86,7 +86,7 @@ describe('VisionLoop', () => {
 
     expect(mockInfer).toHaveBeenCalledTimes(1);
     expect(mockInfer).toHaveBeenCalledWith(
-      expect.stringContaining('robot motor controller'),
+      expect.any(String),
       expect.any(String),
       ['base64imagedata'],
     );
@@ -212,8 +212,8 @@ describe('VisionLoop', () => {
     await visionLoop.processSingleFrame('frame3', history);
 
     expect(mockInfer).toHaveBeenCalledWith(
-      expect.stringContaining('robot motor controller'),
-      expect.stringContaining('last 3 frames of movement'),
+      expect.any(String),
+      'Detect all objects in this view.',
       ['frame1', 'frame2', 'frame3'],
     );
   });
@@ -229,8 +229,8 @@ describe('VisionLoop', () => {
     await visionLoop.processSingleFrame('singleframe');
 
     expect(mockInfer).toHaveBeenCalledWith(
-      expect.stringContaining('robot motor controller'),
-      'What do you see? Output the next motor command.',
+      expect.any(String),
+      'Detect all objects in this view.',
       ['singleframe'],
     );
   });

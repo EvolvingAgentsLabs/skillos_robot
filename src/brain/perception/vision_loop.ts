@@ -23,7 +23,6 @@ import { appendTrace, traceLogger } from '../memory/trace_logger';
 import { HierarchyLevel, TraceOutcome, TraceSource } from '../memory/trace_types';
 import type { InferenceFunction } from '../../llmunix-core/interfaces';
 import type { PerceptionPolicy, TelemetrySnapshot } from './perception_policy';
-import { VLMMotorPolicy } from './vlm_motor_policy';
 import { SelfPerceptionMonitor, type SelfPerceptionResult, type SelfPerceptionConfig } from './self_perception';
 import { SemanticLoop, type PerceptionEvent } from './semantic_loop';
 import { ReactiveLoop, type ReactiveCommandEvent } from '../../control/reactive_loop';
@@ -50,14 +49,9 @@ export interface VisionLoopConfig {
   reconnectDelayMs: number;
   /** Number of recent frames to send for temporal context (default: 4) */
   frameHistorySize: number;
-  /** Use tool-calling system prompt instead of hex bytecode prompt (for Gemini with function calling) */
-  useToolCallingPrompt?: boolean;
-  /** ms to wait after STOP before inference (default: 100). Set to 0 to skip settle delay. */
+  /** ms to wait after STOP before inference (default: 100). Set to 0 to skip settle delay.
+   *  Only used in legacy mode (ignored when dual-loop is enabled). */
   stopSettleMs?: number;
-  /** Skip STOP-before-inference entirely — let the previous command keep running while VLM thinks.
-   *  Useful when inference is slow (2s+) and stopping between every frame prevents movement.
-   *  The heartbeat keeps ESP32 alive, and frame history captures motion for temporal context. */
-  coastDuringInference?: boolean;
 }
 
 export interface VisionLoopStats {
@@ -127,8 +121,8 @@ export class VisionLoop extends EventEmitter {
   // Telemetry injection: provides real-time pose/heading/target data for VLM prompt
   private telemetryProvider: (() => { pose: { x: number; y: number; h: number }; targetDist?: number; targetBearing?: number } | null) | null = null;
 
-  // PerceptionPolicy: strategy pattern for frame processing (PR-3)
-  private policy: PerceptionPolicy;
+  // PerceptionPolicy: strategy pattern for legacy frame processing
+  private policy: PerceptionPolicy | null = null;
 
   // V1 Visual Self-Perception: camera-based action verification
   private selfPerception: SelfPerceptionMonitor;
@@ -184,20 +178,11 @@ export class VisionLoop extends EventEmitter {
     this.infer = infer;
     this.minFrameIntervalMs = 1000 / (this.config.targetFPS || 2);
 
-    // Default policy: VLMMotorPolicy (preserves original behavior)
-    this.policy = new VLMMotorPolicy(compiler, infer, {
-      useToolCallingPrompt: !!this.config.useToolCallingPrompt,
-    });
+    // No default policy — must be set via setPolicy() or enableDualLoop().
+    // In dual-loop mode, SemanticLoop handles perception directly.
 
     // V1 Visual Self-Perception monitor (compares pre/post command frames)
     this.selfPerception = new SelfPerceptionMonitor();
-
-    // Prompt-mode alignment validation (Constraint 10):
-    // When useToolCallingPrompt is set, the inference backend MUST support tool calling.
-    // We can't inspect the opaque InferenceFunction, but we log a clear reminder.
-    if (this.config.useToolCallingPrompt) {
-      logger.info('VisionLoop', 'Tool-calling prompt mode enabled — ensure inference backend has useToolCalling: true');
-    }
   }
 
   // ===========================================================================
@@ -427,19 +412,13 @@ export class VisionLoop extends EventEmitter {
 
   /**
    * Process a single frame manually (for testing or single-shot mode).
+   * Uses the overhead scene prompt (perception-only) — motor decisions
+   * come from the ReactiveLoop in dual-loop mode.
    */
   async processSingleFrame(frameBase64: string, history?: string[]): Promise<Buffer | null> {
-    const systemPrompt = this.config.useToolCallingPrompt
-      ? this.compiler.getToolCallingSystemPrompt(this.currentGoal)
-      : this.compiler.getSystemPrompt(this.currentGoal);
+    const systemPrompt = this.compiler.getOverheadScenePrompt(this.currentGoal);
     const frames = history ?? [frameBase64];
-    const userMessage = frames.length > 1
-      ? this.config.useToolCallingPrompt
-        ? `This is a video of the last ${frames.length} frames of movement (oldest→newest). The goal is: ${this.currentGoal}. Analyze what you see and call the appropriate motor control function.`
-        : `This is a video of the last ${frames.length} frames of movement (oldest→newest). The goal is: ${this.currentGoal}. Use the visual differences between frames to gauge your velocity and 3D surroundings. Output the next 6-byte motor command.`
-      : this.config.useToolCallingPrompt
-        ? `What do you see? Call the appropriate motor control function for the goal: ${this.currentGoal}`
-        : 'What do you see? Output the next motor command.';
+    const userMessage = 'Detect all objects in this view.';
 
     await this.stopAndSettle();
     this.startInferenceHeartbeat();
@@ -740,10 +719,12 @@ export class VisionLoop extends EventEmitter {
   }
 
   private async processFrame(jpegData: Buffer): Promise<void> {
-    this.processingFrame = true;
-    if (!this.config.coastDuringInference) {
-      await this.stopAndSettle();
+    if (!this.policy) {
+      logger.warn('VisionLoop', 'No policy set — call setPolicy() or enableDualLoop() before starting');
+      return;
     }
+    this.processingFrame = true;
+    await this.stopAndSettle();
     this.startInferenceHeartbeat();
 
     try {
@@ -763,7 +744,7 @@ export class VisionLoop extends EventEmitter {
         : null;
 
       // Delegate to the active perception policy
-      const result = await this.policy.processFrame(
+      const result = await this.policy!.processFrame(
         frameBase64s,
         this.currentGoal,
         telemetry,
