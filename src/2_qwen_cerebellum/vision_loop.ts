@@ -17,6 +17,7 @@ import { HierarchyLevel, TraceOutcome, TraceSource } from '../3_llmunix_memory/t
 import type { InferenceFunction } from '../llmunix-core/interfaces';
 import type { PerceptionPolicy, TelemetrySnapshot } from './perception_policy';
 import { VLMMotorPolicy } from './vlm_motor_policy';
+import { SelfPerceptionMonitor, type SelfPerceptionResult, type SelfPerceptionConfig } from './self_perception';
 
 // =============================================================================
 // Types
@@ -97,6 +98,9 @@ export class VisionLoop extends EventEmitter {
   // PerceptionPolicy: strategy pattern for frame processing (PR-3)
   private policy: PerceptionPolicy;
 
+  // V1 Visual Self-Perception: camera-based action verification
+  private selfPerception: SelfPerceptionMonitor;
+
   // Stuck detection + step timeout
   private recentOpcodes: number[] = [];
   private static readonly STUCK_WINDOW = 12;
@@ -148,6 +152,9 @@ export class VisionLoop extends EventEmitter {
       useToolCallingPrompt: !!this.config.useToolCallingPrompt,
     });
 
+    // V1 Visual Self-Perception monitor (compares pre/post command frames)
+    this.selfPerception = new SelfPerceptionMonitor();
+
     // Prompt-mode alignment validation (Constraint 10):
     // When useToolCallingPrompt is set, the inference backend MUST support tool calling.
     // We can't inspect the opaque InferenceFunction, but we log a clear reminder.
@@ -194,6 +201,7 @@ export class VisionLoop extends EventEmitter {
 
     this.buffer = Buffer.alloc(0);
     this.flushFrameHistory();
+    this.selfPerception.resetStuckCounter();
     logger.info('VisionLoop', 'Stopped');
   }
 
@@ -259,6 +267,16 @@ export class VisionLoop extends EventEmitter {
   resetStepTimer(): void {
     this.stepStartTime = Date.now();
     this.recentOpcodes = [];
+  }
+
+  /** Get the self-perception monitor for stats/config access. */
+  getSelfPerception(): SelfPerceptionMonitor {
+    return this.selfPerception;
+  }
+
+  /** Override self-perception config (e.g., after calibration). */
+  setSelfPerceptionConfig(config: Partial<SelfPerceptionConfig>): void {
+    this.selfPerception.updateConfig(config);
   }
 
   /**
@@ -552,6 +570,10 @@ export class VisionLoop extends EventEmitter {
       this.frameHistory.shift();
     }
 
+    // V1 Self-Perception: compare this new frame against the pre-command frame
+    // from the previous cycle (non-blocking — fire-and-forget, emits events)
+    this.runSelfPerceptionCheck(this.latestFrameBase64);
+
     // Don't queue frames if we're still processing the previous one
     if (this.processingFrame) return;
 
@@ -604,6 +626,17 @@ export class VisionLoop extends EventEmitter {
         this.emit('bytecode', bytecode, vlmOutput);
 
         const decoded = decodeFrame(bytecode);
+
+        // V1 Self-Perception: record the current frame as "pre-command" —
+        // the next frame that arrives will be compared against this one
+        // to verify the motor command produced observable visual change.
+        if (decoded) {
+          const latestFrame = this.frameHistory[this.frameHistory.length - 1]?.base64Data;
+          if (latestFrame) {
+            this.selfPerception.recordPreCommandFrame(latestFrame, decoded.opcode);
+          }
+        }
+
         if (decoded && decoded.opcode === Opcode.STOP) {
           // Close any open reactive trace as SUCCESS on arrival
           this.closeReactiveTrace(TraceOutcome.SUCCESS, 'Arrival detected');
@@ -663,6 +696,28 @@ export class VisionLoop extends EventEmitter {
       this.stopInferenceHeartbeat();
       this.processingFrame = false;
     }
+  }
+
+  /**
+   * V1 Self-Perception: compare the new frame against the stored pre-command frame.
+   * Runs asynchronously; emits 'selfPerception' on every comparison and
+   * 'visualStuck' when confirmed stuck across consecutive frames.
+   */
+  private runSelfPerceptionCheck(postFrameBase64: string): void {
+    this.selfPerception.comparePostFrame(postFrameBase64).then((result) => {
+      if (!result) return;
+      this.emit('selfPerception', result);
+
+      if (result.verdict === 'stuck' && this.selfPerception.isConfirmedStuck()) {
+        logger.warn('VisionLoop',
+          `Visual stuck confirmed (${this.selfPerception.getConsecutiveStuck()} consecutive, delta=${result.delta.toFixed(4)})`);
+        this.emit('visualStuck', result);
+      }
+    }).catch((err) => {
+      logger.warn('VisionLoop', 'Self-perception check failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   /**

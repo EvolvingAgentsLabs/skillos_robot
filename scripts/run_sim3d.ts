@@ -40,6 +40,7 @@ import { ReflexGuard, attachReflexGuard } from '../src/2_qwen_cerebellum/reflex_
 import { SceneGraphPolicy } from '../src/2_qwen_cerebellum/scene_graph_policy';
 import { createPerceptionInference } from '../src/2_qwen_cerebellum/gemini_robotics';
 import type { ArenaConfig } from '../src/2_qwen_cerebellum/vision_projector';
+import type { SelfPerceptionResult } from '../src/2_qwen_cerebellum/self_perception';
 import { SCENARIO_PRESETS } from '../src/shared/scenario_presets';
 
 dotenv.config();
@@ -266,6 +267,16 @@ async function main(): Promise<void> {
 
   visionLoop.on('stuck', () => {
     logger.warn('Sim3D', 'Stuck detection triggered');
+  });
+
+  visionLoop.on('selfPerception', (result: SelfPerceptionResult) => {
+    if (result.verdict !== 'coherent') {
+      logger.info('Sim3D', `Self-perception: ${result.opcodeName} → ${result.verdict} (delta=${result.delta.toFixed(4)}, t=${result.timeDeltaMs}ms)`);
+    }
+  });
+
+  visionLoop.on('visualStuck', (result: SelfPerceptionResult) => {
+    logger.warn('Sim3D', `VISUAL STUCK CONFIRMED: delta=${result.delta.toFixed(4)} after ${result.opcodeName} (${visionLoop.getSelfPerception().getConsecutiveStuck()} consecutive)`);
   });
 
   visionLoop.on('reconnecting', () => {
