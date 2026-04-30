@@ -4,8 +4,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { HierarchicalTraceLogger } from '../../src/3_llmunix_memory/trace_logger';
-import { HierarchyLevel, TraceOutcome } from '../../src/3_llmunix_memory/trace_types';
+import { HierarchicalTraceLogger } from '../../src/brain/memory/trace_logger';
+import { HierarchyLevel, TraceOutcome } from '../../src/brain/memory/trace_types';
 
 const TEST_TRACES_DIR = path.join(__dirname, '__test_traces__');
 

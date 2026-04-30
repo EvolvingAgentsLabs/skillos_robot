@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# robot — terminal interface for RoClaw
+# Usage: robot <command> [options]
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+robot — AI-powered robot navigation
+
+Commands:
+  navigate <goal>   Run a navigation goal
+    --gemini          Use Gemini cloud teacher (default)
+    --local           Use Ollama local model (no internet)
+    --ollama          Alias for --local
+    --dream           Dream mode: consolidate past failures
+    --explore         Free exploration (no specific goal)
+    --constraints <c> Additional constraints
+
+  sim               Start the simulation bridge
+    --serve           Start only the WebSocket bridge server
+
+  dream             Run dream consolidation loop
+
+  test              Test hardware connection (ESP32-S3)
+
+  status            Show current system status
+
+Examples:
+  robot navigate "go to the red cube"
+  robot navigate --local "go through the doorway"
+  robot navigate --dream
+  robot sim --serve
+  robot dream
+  robot test
+EOF
+}
+
+CMD="${1:-help}"
+shift || true
+
+case "$CMD" in
+  navigate)
+    exec npx tsx "$DIR/scripts/run_sim3d.ts" "$@"
+    ;;
+  sim)
+    exec npx tsx "$DIR/src/mjswan_bridge.ts" "$@"
+    ;;
+  dream)
+    exec npx tsx "$DIR/scripts/dream_loop.ts" "$@"
+    ;;
+  test)
+    exec npx tsx "$DIR/scripts/hardware_test.ts" "$@"
+    ;;
+  status)
+    echo "robot status"
+    echo "────────────"
+    echo "dir:    $DIR"
+    echo "node:   $(node --version 2>/dev/null || echo 'not found')"
+    if command -v ollama &>/dev/null; then
+      echo "ollama: $(ollama --version 2>/dev/null || echo 'installed')"
+    else
+      echo "ollama: not installed"
+    fi
+    if [ -f "$DIR/.env" ]; then
+      echo "config: .env found"
+    else
+      echo "config: no .env (simulation only)"
+    fi
+    echo "traces: $(find "$DIR/traces" -name '*.md' 2>/dev/null | wc -l | tr -d ' ') files"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    echo "unknown command: $CMD"
+    echo "run 'robot help' for usage"
+    exit 1
+    ;;
+esac

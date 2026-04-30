@@ -16,7 +16,7 @@ import {
   decodeFrameV2,
   decodeFrameAuto,
   formatHex,
-} from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/bytecode_compiler';
 
 describe('BytecodeCompiler', () => {
   let compiler: BytecodeCompiler;

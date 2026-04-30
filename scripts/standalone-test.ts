@@ -9,11 +9,11 @@
 
 import * as dotenv from 'dotenv';
 import { logger } from '../src/shared/logger';
-import { BytecodeCompiler } from '../src/2_qwen_cerebellum/bytecode_compiler';
-import { UDPTransmitter } from '../src/2_qwen_cerebellum/udp_transmitter';
-import { VisionLoop } from '../src/2_qwen_cerebellum/vision_loop';
-import { CerebellumInference } from '../src/2_qwen_cerebellum/inference';
-import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_tools';
+import { BytecodeCompiler } from '../src/control/bytecode_compiler';
+import { UDPTransmitter } from '../src/bridge/udp_transmitter';
+import { VisionLoop } from '../src/brain/perception/vision_loop';
+import { CerebellumInference } from '../src/brain/inference/inference';
+import { handleTool, type ToolContext } from '../src/brain/planning/roclaw_tools';
 
 dotenv.config();
 

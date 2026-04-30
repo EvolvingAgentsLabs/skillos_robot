@@ -24,11 +24,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { TextSceneSimulator, SCENARIOS, type DreamScenario, type TextFrame } from '../../src/3_llmunix_memory/dream_simulator/text_scene';
-import { BytecodeCompiler, encodeFrame, Opcode, formatHex, decodeFrame, OPCODE_NAMES } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+import { TextSceneSimulator, SCENARIOS, type DreamScenario, type TextFrame } from '../../src/brain/memory/dream_simulator/text_scene';
+import { BytecodeCompiler, encodeFrame, Opcode, formatHex, decodeFrame, OPCODE_NAMES } from '../../src/control/bytecode_compiler';
 import { DreamEngine } from '../../src/llmunix-core/dream_engine';
 import { StrategyStore } from '../../src/llmunix-core/strategy_store';
-import { roClawDreamAdapter } from '../../src/3_llmunix_memory/roclaw_dream_adapter';
+import { roClawDreamAdapter } from '../../src/brain/memory/roclaw_dream_adapter';
 import { HierarchyLevel, TraceOutcome, TraceSource } from '../../src/llmunix-core/types';
 import { HierarchicalTraceLogger } from '../../src/llmunix-core/trace_logger';
 import { CoreMemoryManager } from '../../src/llmunix-core/memory_manager';

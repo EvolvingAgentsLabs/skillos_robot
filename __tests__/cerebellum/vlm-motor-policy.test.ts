@@ -1,7 +1,7 @@
-import { VLMMotorPolicy, buildTelemetrySection } from '../../src/2_qwen_cerebellum/vlm_motor_policy';
-import { BytecodeCompiler, Opcode, decodeFrame, FRAME_SIZE } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+import { VLMMotorPolicy, buildTelemetrySection } from '../../src/brain/perception/vlm_motor_policy';
+import { BytecodeCompiler, Opcode, decodeFrame, FRAME_SIZE } from '../../src/control/bytecode_compiler';
 import type { InferenceFunction } from '../../src/llmunix-core/interfaces';
-import type { TelemetrySnapshot } from '../../src/2_qwen_cerebellum/perception_policy';
+import type { TelemetrySnapshot } from '../../src/brain/perception/perception_policy';
 
 describe('VLMMotorPolicy', () => {
   let compiler: BytecodeCompiler;

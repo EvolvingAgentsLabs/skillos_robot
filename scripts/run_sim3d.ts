@@ -24,23 +24,23 @@ import * as http from 'http';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { logger } from '../src/shared/logger';
-import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from '../src/2_qwen_cerebellum/bytecode_compiler';
-import { UDPTransmitter } from '../src/2_qwen_cerebellum/udp_transmitter';
-import { VisionLoop } from '../src/2_qwen_cerebellum/vision_loop';
-import { CerebellumInference } from '../src/2_qwen_cerebellum/inference';
-import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/2_qwen_cerebellum/gemini_robotics';
-import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_tools';
+import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from '../src/control/bytecode_compiler';
+import { UDPTransmitter } from '../src/bridge/udp_transmitter';
+import { VisionLoop } from '../src/brain/perception/vision_loop';
+import { CerebellumInference } from '../src/brain/inference/inference';
+import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/brain/inference/gemini_robotics';
+import { handleTool, type ToolContext } from '../src/brain/planning/roclaw_tools';
 import { TraceSource, TraceOutcome } from '../src/llmunix-core/types';
-import { TelemetryMonitor } from '../src/2_qwen_cerebellum/telemetry_monitor';
-import { Sim3DTraceCollector } from '../src/3_llmunix_memory/sim3d_trace_collector';
-import { SceneGraph } from '../src/3_llmunix_memory/scene_graph';
-import { ReactiveController } from '../src/1_openclaw_cortex/reactive_controller';
-import { ShadowPerceptionLoop } from '../src/2_qwen_cerebellum/shadow_perception_loop';
-import { ReflexGuard, attachReflexGuard } from '../src/2_qwen_cerebellum/reflex_guard';
-import { SceneGraphPolicy } from '../src/2_qwen_cerebellum/scene_graph_policy';
-import { createPerceptionInference } from '../src/2_qwen_cerebellum/gemini_robotics';
-import type { ArenaConfig } from '../src/2_qwen_cerebellum/vision_projector';
-import type { SelfPerceptionResult } from '../src/2_qwen_cerebellum/self_perception';
+import { TelemetryMonitor } from '../src/brain/perception/telemetry_monitor';
+import { Sim3DTraceCollector } from '../src/brain/memory/sim3d_trace_collector';
+import { SceneGraph } from '../src/brain/memory/scene_graph';
+import { ReactiveController } from '../src/control/reactive_controller';
+import { ShadowPerceptionLoop } from '../src/brain/perception/shadow_perception_loop';
+import { ReflexGuard, attachReflexGuard } from '../src/control/reflex_guard';
+import { SceneGraphPolicy } from '../src/brain/perception/scene_graph_policy';
+import { createPerceptionInference } from '../src/brain/inference/gemini_robotics';
+import type { ArenaConfig } from '../src/brain/perception/vision_projector';
+import type { SelfPerceptionResult } from '../src/brain/perception/self_perception';
 import { SCENARIO_PRESETS } from '../src/shared/scenario_presets';
 
 dotenv.config();
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
   // 3. Inference (Ollama, Gemini, OpenRouter, or local)
   let infer;
   if (useOllama) {
-    const { OllamaInference } = await import('../src/2_qwen_cerebellum/ollama_inference');
+    const { OllamaInference } = await import('../src/brain/inference/ollama_inference');
     const ollama = new OllamaInference({
       model: ollamaModelName,
       temperature: 0.1,

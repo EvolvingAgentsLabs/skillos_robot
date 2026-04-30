@@ -21,8 +21,8 @@ import {
   type SceneAnalysis,
   type SemanticNode,
   type SpatialFeature,
-} from '../../src/3_llmunix_memory/semantic_map';
-import type { InferenceFunction } from '../../src/2_qwen_cerebellum/inference';
+} from '../../src/brain/memory/semantic_map';
+import type { InferenceFunction } from '../../src/brain/inference/inference';
 import {
   BytecodeCompiler,
   Opcode,
@@ -31,7 +31,7 @@ import {
   formatHex,
   FRAME_START,
   FRAME_END,
-} from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/bytecode_compiler';
 
 // =============================================================================
 // Simulated Scenes — Reuse from semantic-map.e2e.test.ts for consistency

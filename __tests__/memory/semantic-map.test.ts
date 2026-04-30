@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { PoseMap, SemanticMap, type SemanticMapEntry, type Pose } from '../../src/3_llmunix_memory/semantic_map';
+import { PoseMap, SemanticMap, type SemanticMapEntry, type Pose } from '../../src/brain/memory/semantic_map';
 
 const MAP_FILE = path.join(__dirname, '../../src/3_llmunix_memory/traces/semantic_map.json');
 const TOPO_MAP_FILE = path.join(__dirname, '../../src/3_llmunix_memory/traces/topo_map.json');

@@ -21,10 +21,10 @@ import {
   SemanticMap,
   type SceneAnalysis,
   type SemanticNode,
-} from '../../src/3_llmunix_memory/semantic_map';
-import { CerebellumInference } from '../../src/2_qwen_cerebellum/inference';
-import type { InferenceFunction } from '../../src/2_qwen_cerebellum/inference';
-import { BytecodeCompiler, Opcode, OPCODE_NAMES } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/brain/memory/semantic_map';
+import { CerebellumInference } from '../../src/brain/inference/inference';
+import type { InferenceFunction } from '../../src/brain/inference/inference';
+import { BytecodeCompiler, Opcode, OPCODE_NAMES } from '../../src/control/bytecode_compiler';
 import {
   loadSceneFixture,
   validateFixtures,

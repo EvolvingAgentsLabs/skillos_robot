@@ -4,8 +4,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { StrategyStore } from '../../src/3_llmunix_memory/strategy_store';
-import { HierarchyLevel, type Strategy, type NegativeConstraint } from '../../src/3_llmunix_memory/trace_types';
+import { StrategyStore } from '../../src/brain/memory/strategy_store';
+import { HierarchyLevel, type Strategy, type NegativeConstraint } from '../../src/brain/memory/trace_types';
 
 const TEST_STRATEGIES_DIR = path.join(__dirname, '__test_strategies__');
 

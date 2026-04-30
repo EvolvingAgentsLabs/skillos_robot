@@ -12,9 +12,9 @@
 
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
-import { DreamScenarioRunner, generateDreamReport, type RunnerConfig, type ScenarioResult } from '../src/3_llmunix_memory/dream_simulator/scenario_runner';
-import { SCENARIOS } from '../src/3_llmunix_memory/dream_simulator/text_scene';
-import { DreamInferenceRouter, type DreamInferenceRouterConfig } from '../src/3_llmunix_memory/dream_simulator/dream_inference_router';
+import { DreamScenarioRunner, generateDreamReport, type RunnerConfig, type ScenarioResult } from '../src/brain/memory/dream_simulator/scenario_runner';
+import { SCENARIOS } from '../src/brain/memory/dream_simulator/text_scene';
+import { DreamInferenceRouter, type DreamInferenceRouterConfig } from '../src/brain/memory/dream_simulator/dream_inference_router';
 import { TraceOutcome } from '../src/llmunix-core/types';
 
 dotenv.config();
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
   console.log('\n--- Student: Ollama ---');
 
   // Import OllamaInference dynamically
-  const { OllamaInference } = await import('../src/2_qwen_cerebellum/ollama_inference');
+  const { OllamaInference } = await import('../src/brain/inference/ollama_inference');
   const ollama = new OllamaInference({
     baseUrl: ollamaUrl,
     model: ollamaModel,
@@ -169,8 +169,8 @@ async function main(): Promise<void> {
   // We can't directly use DreamScenarioRunner with Ollama since it only
   // takes a DreamInferenceRouter (Gemini). Instead, run scenarios manually
   // using the same pipeline.
-  const { TextSceneSimulator } = await import('../src/3_llmunix_memory/dream_simulator/text_scene');
-  const { BytecodeCompiler, formatHex, encodeFrame, Opcode, OPCODE_NAMES } = await import('../src/2_qwen_cerebellum/bytecode_compiler');
+  const { TextSceneSimulator } = await import('../src/brain/memory/dream_simulator/text_scene');
+  const { BytecodeCompiler, formatHex, encodeFrame, Opcode, OPCODE_NAMES } = await import('../src/control/bytecode_compiler');
 
   const compiler = new BytecodeCompiler('fewshot');
   const STOP_FRAME = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });

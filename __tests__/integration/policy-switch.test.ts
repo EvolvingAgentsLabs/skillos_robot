@@ -11,15 +11,15 @@
  *   - Both produce valid 6-byte frames
  */
 
-import { VisionLoop } from '../../src/2_qwen_cerebellum/vision_loop';
-import { BytecodeCompiler, Opcode, decodeFrame, FRAME_SIZE } from '../../src/2_qwen_cerebellum/bytecode_compiler';
-import { UDPTransmitter } from '../../src/2_qwen_cerebellum/udp_transmitter';
-import { VLMMotorPolicy } from '../../src/2_qwen_cerebellum/vlm_motor_policy';
-import { SceneGraphPolicy } from '../../src/2_qwen_cerebellum/scene_graph_policy';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
-import { ReactiveController } from '../../src/1_openclaw_cortex/reactive_controller';
+import { VisionLoop } from '../../src/brain/perception/vision_loop';
+import { BytecodeCompiler, Opcode, decodeFrame, FRAME_SIZE } from '../../src/control/bytecode_compiler';
+import { UDPTransmitter } from '../../src/bridge/udp_transmitter';
+import { VLMMotorPolicy } from '../../src/brain/perception/vlm_motor_policy';
+import { SceneGraphPolicy } from '../../src/brain/perception/scene_graph_policy';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
+import { ReactiveController } from '../../src/control/reactive_controller';
 import type { InferenceFunction } from '../../src/llmunix-core/interfaces';
-import type { ArenaConfig } from '../../src/2_qwen_cerebellum/vision_projector';
+import type { ArenaConfig } from '../../src/brain/perception/vision_projector';
 
 // =============================================================================
 // Shared fixtures

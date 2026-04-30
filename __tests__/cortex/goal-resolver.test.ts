@@ -1,5 +1,5 @@
-import { resolveGoalFromText, ResolvedGoal } from '../../src/1_openclaw_cortex/goal_resolver';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
+import { resolveGoalFromText, ResolvedGoal } from '../../src/brain/planning/goal_resolver';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
 
 function makeGraph(...nodes: { id: string; label: string; x: number; y: number }[]): SceneGraph {
   const g = new SceneGraph();

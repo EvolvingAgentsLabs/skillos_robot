@@ -1,12 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
 import {
   serializeSceneGraph,
   countCollisionPredictions,
-} from '../../src/3_llmunix_memory/roclaw_dream_adapter';
-import { Sim3DTraceCollector } from '../../src/3_llmunix_memory/sim3d_trace_collector';
+} from '../../src/brain/memory/roclaw_dream_adapter';
+import { Sim3DTraceCollector } from '../../src/brain/memory/sim3d_trace_collector';
 
 // =============================================================================
 // serializeSceneGraph

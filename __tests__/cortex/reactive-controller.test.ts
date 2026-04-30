@@ -1,9 +1,9 @@
 import {
   ReactiveController,
   type ControllerDecision,
-} from '../../src/1_openclaw_cortex/reactive_controller';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
-import { Opcode, decodeFrame } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/reactive_controller';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
+import { Opcode, decodeFrame } from '../../src/control/bytecode_compiler';
 
 // Helpers -------------------------------------------------------------------
 

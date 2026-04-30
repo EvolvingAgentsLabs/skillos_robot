@@ -1,10 +1,10 @@
-import { SceneGraphPolicy } from '../../src/2_qwen_cerebellum/scene_graph_policy';
-import { BytecodeCompiler, Opcode, decodeFrame, FRAME_SIZE } from '../../src/2_qwen_cerebellum/bytecode_compiler';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
-import { ReactiveController } from '../../src/1_openclaw_cortex/reactive_controller';
+import { SceneGraphPolicy } from '../../src/brain/perception/scene_graph_policy';
+import { BytecodeCompiler, Opcode, decodeFrame, FRAME_SIZE } from '../../src/control/bytecode_compiler';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
+import { ReactiveController } from '../../src/control/reactive_controller';
 import type { InferenceFunction } from '../../src/llmunix-core/interfaces';
-import type { ArenaConfig } from '../../src/2_qwen_cerebellum/vision_projector';
-import type { TelemetrySnapshot } from '../../src/2_qwen_cerebellum/perception_policy';
+import type { ArenaConfig } from '../../src/brain/perception/vision_projector';
+import type { TelemetrySnapshot } from '../../src/brain/perception/perception_policy';
 
 // =============================================================================
 // Helpers

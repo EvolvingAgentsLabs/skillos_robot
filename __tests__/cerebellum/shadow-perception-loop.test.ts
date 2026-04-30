@@ -3,11 +3,11 @@
  * scene-graph pipeline against actual VLM bytecodes.
  */
 
-import { ShadowPerceptionLoop, type DivergenceInfo, type TelemetryProvider } from '../../src/2_qwen_cerebellum/shadow_perception_loop';
-import { BytecodeCompiler, encodeFrame, Opcode } from '../../src/2_qwen_cerebellum/bytecode_compiler';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
-import { ReactiveController, type ControllerGoal } from '../../src/1_openclaw_cortex/reactive_controller';
-import type { ArenaConfig } from '../../src/2_qwen_cerebellum/vision_projector';
+import { ShadowPerceptionLoop, type DivergenceInfo, type TelemetryProvider } from '../../src/brain/perception/shadow_perception_loop';
+import { BytecodeCompiler, encodeFrame, Opcode } from '../../src/control/bytecode_compiler';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
+import { ReactiveController, type ControllerGoal } from '../../src/control/reactive_controller';
+import type { ArenaConfig } from '../../src/brain/perception/vision_projector';
 
 // =============================================================================
 // Fixtures

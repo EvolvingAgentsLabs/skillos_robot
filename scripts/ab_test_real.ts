@@ -22,9 +22,9 @@ import {
   SCENARIOS,
   type ScenarioResult,
   type RunnerConfig,
-} from '../src/3_llmunix_memory/dream_simulator';
+} from '../src/brain/memory/dream_simulator';
 
-import { StrategyStore } from '../src/3_llmunix_memory/strategy_store';
+import { StrategyStore } from '../src/brain/memory/strategy_store';
 import { HierarchyLevel } from '../src/llmunix-core/types';
 
 dotenv.config();

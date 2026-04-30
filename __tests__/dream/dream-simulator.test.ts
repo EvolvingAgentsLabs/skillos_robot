@@ -2,8 +2,8 @@
  * Dream Simulator Tests — TextSceneSimulator + ScenarioRunner
  */
 
-import { TextSceneSimulator, SCENARIOS, type DreamScenario } from '../../src/3_llmunix_memory/dream_simulator/text_scene';
-import { encodeFrame, Opcode, formatHex } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+import { TextSceneSimulator, SCENARIOS, type DreamScenario } from '../../src/brain/memory/dream_simulator/text_scene';
+import { encodeFrame, Opcode, formatHex } from '../../src/control/bytecode_compiler';
 
 // =============================================================================
 // TextSceneSimulator

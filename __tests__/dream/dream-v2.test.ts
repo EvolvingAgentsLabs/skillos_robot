@@ -7,13 +7,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { StrategyStore } from '../../src/3_llmunix_memory/strategy_store';
-import { HierarchicalTraceLogger } from '../../src/3_llmunix_memory/trace_logger';
+import { StrategyStore } from '../../src/brain/memory/strategy_store';
+import { HierarchicalTraceLogger } from '../../src/brain/memory/trace_logger';
 import {
   HierarchyLevel,
   TraceOutcome,
   type Strategy,
-} from '../../src/3_llmunix_memory/trace_types';
+} from '../../src/brain/memory/trace_types';
 
 const TEST_DIR = path.join(__dirname, '__test_dream__');
 const TRACES_DIR = path.join(TEST_DIR, 'traces');

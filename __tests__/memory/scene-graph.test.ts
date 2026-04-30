@@ -7,7 +7,7 @@ import {
   DEFAULT_ROBOT_BBOX,
   type AABB,
   type SceneGraphJSON,
-} from '../../src/3_llmunix_memory/scene_graph';
+} from '../../src/brain/memory/scene_graph';
 
 const TMP_DIR = path.join(__dirname, '..', '..', '.tmp-scene-graph');
 const TMP_FILE = path.join(TMP_DIR, 'scene_graph.test.json');

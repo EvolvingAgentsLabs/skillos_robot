@@ -1,14 +1,14 @@
 import { EventEmitter } from 'events';
-import { SemanticMapLoop } from '../../src/3_llmunix_memory/semantic_map_loop';
-import { SemanticMap } from '../../src/3_llmunix_memory/semantic_map';
-import type { VisionLoop } from '../../src/2_qwen_cerebellum/vision_loop';
-import type { InferenceFunction } from '../../src/2_qwen_cerebellum/inference';
-import { BytecodeCompiler, Opcode } from '../../src/2_qwen_cerebellum/bytecode_compiler';
-import type { UDPTransmitter } from '../../src/2_qwen_cerebellum/udp_transmitter';
+import { SemanticMapLoop } from '../../src/brain/memory/semantic_map_loop';
+import { SemanticMap } from '../../src/brain/memory/semantic_map';
+import type { VisionLoop } from '../../src/brain/perception/vision_loop';
+import type { InferenceFunction } from '../../src/brain/inference/inference';
+import { BytecodeCompiler, Opcode } from '../../src/control/bytecode_compiler';
+import type { UDPTransmitter } from '../../src/bridge/udp_transmitter';
 
 // Mock SemanticMap to avoid real VLM calls and file I/O
-jest.mock('../../src/3_llmunix_memory/semantic_map', () => {
-  const actual = jest.requireActual('../../src/3_llmunix_memory/semantic_map');
+jest.mock('../../src/brain/memory/semantic_map', () => {
+  const actual = jest.requireActual('../../src/brain/memory/semantic_map');
   return {
     ...actual,
     SemanticMap: jest.fn().mockImplementation(() => ({

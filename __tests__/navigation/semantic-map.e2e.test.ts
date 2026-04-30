@@ -17,11 +17,11 @@ import {
   SemanticMap,
   type SceneAnalysis,
   type SemanticNode,
-} from '../../src/3_llmunix_memory/semantic_map';
+} from '../../src/brain/memory/semantic_map';
 import { extractJSON } from '../../src/llmunix-core/utils';
-import { CerebellumInference } from '../../src/2_qwen_cerebellum/inference';
-import type { InferenceFunction } from '../../src/2_qwen_cerebellum/inference';
-import { BytecodeCompiler, Opcode, OPCODE_NAMES } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+import { CerebellumInference } from '../../src/brain/inference/inference';
+import type { InferenceFunction } from '../../src/brain/inference/inference';
+import { BytecodeCompiler, Opcode, OPCODE_NAMES } from '../../src/control/bytecode_compiler';
 import { StepperKinematics } from '../../src/shared/stepper-kinematics';
 
 // =============================================================================
