@@ -1,10 +1,17 @@
 /**
- * RoClaw Vision Loop — The Cerebellum's main reactive cycle
+ * RoClaw Vision Loop — MJPEG streaming + dual-loop composition
  *
- * Pulls MJPEG frames from ESP32-CAM, feeds them to Qwen-VL,
- * compiles the output to bytecode, and transmits to ESP32-S3.
+ * Two modes of operation:
  *
- * Cycle: capture → infer → compile → transmit → repeat
+ *   1. Legacy mode (default): Synchronous VLM-motor path via PerceptionPolicy.
+ *      Frame → STOP → VLM inference (2-5s blocked) → bytecode → transmit.
+ *
+ *   2. Dual-loop mode (via enableDualLoop()): Composes SemanticLoop (1-2 Hz,
+ *      async VLM perception) + ReactiveLoop (10-20 Hz, math-based motor control).
+ *      The robot drives smoothly while VLM thinks — no blocking.
+ *
+ * In both modes, VisionLoop owns MJPEG streaming and frame parsing.
+ * Events are forwarded so consumers see the same API regardless of mode.
  */
 
 import { EventEmitter } from 'events';
@@ -18,6 +25,13 @@ import type { InferenceFunction } from '../../llmunix-core/interfaces';
 import type { PerceptionPolicy, TelemetrySnapshot } from './perception_policy';
 import { VLMMotorPolicy } from './vlm_motor_policy';
 import { SelfPerceptionMonitor, type SelfPerceptionResult, type SelfPerceptionConfig } from './self_perception';
+import { SemanticLoop, type PerceptionEvent } from './semantic_loop';
+import { ReactiveLoop, type ReactiveCommandEvent } from '../../control/reactive_loop';
+import { ReactiveController } from '../../control/reactive_controller';
+import { ReflexGuard } from '../../control/reflex_guard';
+import type { SceneGraph } from '../memory/scene_graph';
+import type { ArenaConfig } from './vision_projector';
+import type { ControllerGoal } from '../../control/reactive_controller';
 
 // =============================================================================
 // Types
@@ -59,6 +73,24 @@ export interface VisionLoopStats {
 export interface TimestampedFrame {
   base64Data: string;
   timestamp: number;
+}
+
+/** Configuration for enabling dual-loop mode (SemanticLoop + ReactiveLoop). */
+export interface DualLoopConfig {
+  /** Shared SceneGraph that SemanticLoop writes and ReactiveLoop reads. */
+  graph: SceneGraph;
+  /** ReactiveController for math-based motor decisions. */
+  controller: ReactiveController;
+  /** ReflexGuard for collision veto. */
+  guard: ReflexGuard;
+  /** Arena dimensions for projection. */
+  arena: ArenaConfig;
+  /** Optional separate inference function for perception (defaults to VisionLoop's infer). */
+  perceptionInfer?: InferenceFunction;
+  /** SemanticLoop interval in ms (default 500 = 2 Hz). */
+  semanticIntervalMs?: number;
+  /** ReactiveLoop interval in ms (default 50 = 20 Hz). */
+  reactiveIntervalMs?: number;
 }
 
 const DEFAULT_CONFIG: VisionLoopConfig = {
@@ -118,6 +150,11 @@ export class VisionLoop extends EventEmitter {
   private static readonly HEARTBEAT_INTERVAL_MS = 1000;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Dual-loop mode (Phase 2 architecture)
+  private dualLoopEnabled = false;
+  private semanticLoop: SemanticLoop | null = null;
+  private reactiveLoop: ReactiveLoop | null = null;
+
   // MJPEG parsing state
   private buffer = Buffer.alloc(0);
   private boundary = '';
@@ -163,6 +200,96 @@ export class VisionLoop extends EventEmitter {
     }
   }
 
+  // ===========================================================================
+  // Dual-loop mode
+  // ===========================================================================
+
+  /**
+   * Enable dual-loop mode: SemanticLoop (1-2 Hz VLM perception) +
+   * ReactiveLoop (10-20 Hz motor control). Once enabled, handleFrame()
+   * feeds frames to SemanticLoop instead of calling processFrame().
+   * The heartbeat and coastDuringInference are no longer needed (ReactiveLoop
+   * at 20 Hz keeps ESP32 alive and provides continuous motor output).
+   */
+  enableDualLoop(config: DualLoopConfig): void {
+    const perceptionInfer = config.perceptionInfer ?? this.infer;
+
+    this.semanticLoop = new SemanticLoop(
+      config.graph,
+      perceptionInfer,
+      this.compiler,
+      config.arena,
+      {
+        intervalMs: config.semanticIntervalMs ?? 500,
+        frameHistorySize: this.config.frameHistorySize,
+        constraints: this.activeConstraints,
+      },
+    );
+
+    this.reactiveLoop = new ReactiveLoop(
+      config.graph,
+      config.controller,
+      config.guard,
+      this.transmitter,
+      { intervalMs: config.reactiveIntervalMs ?? 50 },
+    );
+
+    // Forward SemanticLoop events
+    this.semanticLoop.on('perception', (event: PerceptionEvent) => {
+      this.statsData.inferenceCount++;
+      this.emit('perception', event);
+
+      // Update ReactiveLoop goal when perception resolves it
+      if (event.resolvedGoal.kind !== 'explore' && this.reactiveLoop) {
+        this.reactiveLoop.setGoal(event.resolvedGoal as ControllerGoal);
+      }
+    });
+
+    this.semanticLoop.on('error', (err: Error) => {
+      this.statsData.errors++;
+      this.emit('error', err);
+    });
+
+    // Forward ReactiveLoop events
+    this.reactiveLoop.on('command', (event: ReactiveCommandEvent) => {
+      this.statsData.bytecodesSent++;
+      this.statsData.framesProcessed++;
+      this.emit('bytecode', event.decision.frame, event.decision.reason);
+    });
+
+    this.reactiveLoop.on('arrived', (decision) => {
+      this.closeReactiveTrace(TraceOutcome.SUCCESS, 'ReactiveLoop arrival');
+      this.emit('arrival', decision.reason);
+    });
+
+    this.reactiveLoop.on('stuck', (info) => {
+      this.closeReactiveTrace(TraceOutcome.FAILURE, 'ReactiveLoop stuck');
+      this.emit('stuck', `No progress: ${info.progressCm}cm over ${info.ticks} ticks`);
+    });
+
+    this.dualLoopEnabled = true;
+    logger.info('VisionLoop', 'Dual-loop mode enabled (SemanticLoop + ReactiveLoop)');
+  }
+
+  /** Check if dual-loop mode is active. */
+  isDualLoopEnabled(): boolean {
+    return this.dualLoopEnabled;
+  }
+
+  /** Get the SemanticLoop instance (null if dual-loop not enabled). */
+  getSemanticLoop(): SemanticLoop | null {
+    return this.semanticLoop;
+  }
+
+  /** Get the ReactiveLoop instance (null if dual-loop not enabled). */
+  getReactiveLoop(): ReactiveLoop | null {
+    return this.reactiveLoop;
+  }
+
+  // ===========================================================================
+  // Lifecycle
+  // ===========================================================================
+
   /**
    * Start the vision loop.
    */
@@ -177,7 +304,14 @@ export class VisionLoop extends EventEmitter {
       this.currentGoal = goal;
     }
 
-    logger.info('VisionLoop', `Starting — goal: "${this.currentGoal}"`);
+    // Start sub-loops in dual-loop mode
+    if (this.dualLoopEnabled) {
+      this.semanticLoop!.setGoal(this.currentGoal);
+      this.semanticLoop!.start();
+      this.reactiveLoop!.start();
+    }
+
+    logger.info('VisionLoop', `Starting — goal: "${this.currentGoal}"${this.dualLoopEnabled ? ' [dual-loop]' : ''}`);
     return this.connectToStream();
   }
 
@@ -188,6 +322,12 @@ export class VisionLoop extends EventEmitter {
     this.running = false;
     this.stopInferenceHeartbeat();
     this.closeReactiveTrace(TraceOutcome.UNKNOWN, 'VisionLoop stopped');
+
+    // Stop sub-loops in dual-loop mode
+    if (this.dualLoopEnabled) {
+      this.semanticLoop?.stop();
+      this.reactiveLoop?.stop();
+    }
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -221,6 +361,9 @@ export class VisionLoop extends EventEmitter {
    */
   setGoal(goal: string): void {
     this.currentGoal = goal;
+    if (this.dualLoopEnabled) {
+      this.semanticLoop?.setGoal(goal);
+    }
     logger.info('VisionLoop', `Goal updated: "${goal}"`);
   }
 
@@ -241,6 +384,9 @@ export class VisionLoop extends EventEmitter {
    */
   setConstraints(constraints: string[]): void {
     this.activeConstraints = constraints;
+    if (this.dualLoopEnabled) {
+      this.semanticLoop?.setConstraints(constraints);
+    }
   }
 
   getConstraints(): string[] {
@@ -574,6 +720,14 @@ export class VisionLoop extends EventEmitter {
     // from the previous cycle (non-blocking — fire-and-forget, emits events)
     this.runSelfPerceptionCheck(this.latestFrameBase64);
 
+    // DUAL-LOOP MODE: feed frame to SemanticLoop, no processFrame() call.
+    // Motor output comes from ReactiveLoop at 20 Hz (independent of frames).
+    if (this.dualLoopEnabled) {
+      this.semanticLoop!.feedFrame(this.latestFrameBase64);
+      return;
+    }
+
+    // LEGACY MODE: synchronous VLM-motor path
     // Don't queue frames if we're still processing the previous one
     if (this.processingFrame) return;
 
