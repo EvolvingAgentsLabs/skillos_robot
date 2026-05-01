@@ -26,8 +26,11 @@ import type { PerceptionPolicy, TelemetrySnapshot } from './perception_policy';
 import { SelfPerceptionMonitor, type SelfPerceptionResult, type SelfPerceptionConfig } from './self_perception';
 import { SemanticLoop, type PerceptionEvent } from './semantic_loop';
 import { ReactiveLoop, type ReactiveCommandEvent } from '../../control/reactive_loop';
+import { EgocentricReactiveLoop } from '../../control/reactive_loop';
 import { ReactiveController } from '../../control/reactive_controller';
 import { ReflexGuard } from '../../control/reflex_guard';
+import { EgocentricController } from '../../control/egocentric_controller';
+import { EgocentricReflexGuard } from '../../control/egocentric_reflex_guard';
 import type { SceneGraph } from '../memory/scene_graph';
 import type { ArenaConfig } from './vision_projector';
 import type { ControllerGoal } from '../../control/reactive_controller';
@@ -85,6 +88,13 @@ export interface DualLoopConfig {
   semanticIntervalMs?: number;
   /** ReactiveLoop interval in ms (default 50 = 20 Hz). */
   reactiveIntervalMs?: number;
+  /** Control mode: 'overhead' (default) uses SceneGraph+ReactiveController,
+   *  'egocentric' uses EgocentricController+EgocentricReflexGuard. */
+  controlMode?: 'overhead' | 'egocentric';
+  /** EgocentricController instance (required when controlMode='egocentric'). */
+  egoController?: EgocentricController;
+  /** EgocentricReflexGuard instance (required when controlMode='egocentric'). */
+  egoGuard?: EgocentricReflexGuard;
 }
 
 const DEFAULT_CONFIG: VisionLoopConfig = {
@@ -148,6 +158,7 @@ export class VisionLoop extends EventEmitter {
   private dualLoopEnabled = false;
   private semanticLoop: SemanticLoop | null = null;
   private reactiveLoop: ReactiveLoop | null = null;
+  private egoReactiveLoop: EgocentricReactiveLoop | null = null;
 
   // MJPEG parsing state
   private buffer = Buffer.alloc(0);
@@ -198,6 +209,7 @@ export class VisionLoop extends EventEmitter {
    */
   enableDualLoop(config: DualLoopConfig): void {
     const perceptionInfer = config.perceptionInfer ?? this.infer;
+    const controlMode = config.controlMode ?? 'overhead';
 
     this.semanticLoop = new SemanticLoop(
       config.graph,
@@ -208,15 +220,8 @@ export class VisionLoop extends EventEmitter {
         intervalMs: config.semanticIntervalMs ?? 500,
         frameHistorySize: this.config.frameHistorySize,
         constraints: this.activeConstraints,
+        controlMode,
       },
-    );
-
-    this.reactiveLoop = new ReactiveLoop(
-      config.graph,
-      config.controller,
-      config.guard,
-      this.transmitter,
-      { intervalMs: config.reactiveIntervalMs ?? 50 },
     );
 
     // Forward SemanticLoop events
@@ -224,8 +229,8 @@ export class VisionLoop extends EventEmitter {
       this.statsData.inferenceCount++;
       this.emit('perception', event);
 
-      // Update ReactiveLoop goal when perception resolves it
-      if (event.resolvedGoal.kind !== 'explore' && this.reactiveLoop) {
+      // Update ReactiveLoop goal when perception resolves it (overhead mode only)
+      if (controlMode === 'overhead' && event.resolvedGoal.kind !== 'explore' && this.reactiveLoop) {
         this.reactiveLoop.setGoal(event.resolvedGoal as ControllerGoal);
       }
     });
@@ -235,25 +240,70 @@ export class VisionLoop extends EventEmitter {
       this.emit('error', err);
     });
 
-    // Forward ReactiveLoop events
-    this.reactiveLoop.on('command', (event: ReactiveCommandEvent) => {
-      this.statsData.bytecodesSent++;
-      this.statsData.framesProcessed++;
-      this.emit('bytecode', event.decision.frame, event.decision.reason);
-    });
+    if (controlMode === 'egocentric') {
+      // Egocentric mode: EgocentricReactiveLoop driven by first-person bbox perception
+      if (!config.egoController || !config.egoGuard) {
+        throw new Error('enableDualLoop: egocentric mode requires egoController and egoGuard');
+      }
+      const semanticLoop = this.semanticLoop;
+      const egoReactiveLoop = new EgocentricReactiveLoop(
+        config.egoController,
+        config.egoGuard,
+        this.transmitter,
+        () => semanticLoop.getLastEgoPerception(),
+        { intervalMs: config.reactiveIntervalMs ?? 50 },
+      );
 
-    this.reactiveLoop.on('arrived', (decision) => {
-      this.closeReactiveTrace(TraceOutcome.SUCCESS, 'ReactiveLoop arrival');
-      this.emit('arrival', decision.reason);
-    });
+      // Forward EgocentricReactiveLoop events
+      egoReactiveLoop.on('command', (event: { decision: { frame: Buffer; reason: string } }) => {
+        this.statsData.bytecodesSent++;
+        this.statsData.framesProcessed++;
+        this.emit('bytecode', event.decision.frame, event.decision.reason);
+      });
 
-    this.reactiveLoop.on('stuck', (info) => {
-      this.closeReactiveTrace(TraceOutcome.FAILURE, 'ReactiveLoop stuck');
-      this.emit('stuck', `No progress: ${info.progressCm}cm over ${info.ticks} ticks`);
-    });
+      egoReactiveLoop.on('arrived', (decision: { reason: string }) => {
+        this.closeReactiveTrace(TraceOutcome.SUCCESS, 'EgocentricReactiveLoop arrival');
+        this.emit('arrival', decision.reason);
+      });
+
+      egoReactiveLoop.on('stuck', (info: { searchTicks: number }) => {
+        this.closeReactiveTrace(TraceOutcome.FAILURE, 'EgocentricReactiveLoop stuck');
+        this.emit('stuck', `No target for ${info.searchTicks} ticks`);
+      });
+
+      // Store as generic reference for start/stop lifecycle
+      this.egoReactiveLoop = egoReactiveLoop;
+
+    } else {
+      // Overhead mode: ReactiveLoop driven by SceneGraph
+      this.reactiveLoop = new ReactiveLoop(
+        config.graph,
+        config.controller,
+        config.guard,
+        this.transmitter,
+        { intervalMs: config.reactiveIntervalMs ?? 50 },
+      );
+
+      // Forward ReactiveLoop events
+      this.reactiveLoop.on('command', (event: ReactiveCommandEvent) => {
+        this.statsData.bytecodesSent++;
+        this.statsData.framesProcessed++;
+        this.emit('bytecode', event.decision.frame, event.decision.reason);
+      });
+
+      this.reactiveLoop.on('arrived', (decision) => {
+        this.closeReactiveTrace(TraceOutcome.SUCCESS, 'ReactiveLoop arrival');
+        this.emit('arrival', decision.reason);
+      });
+
+      this.reactiveLoop.on('stuck', (info) => {
+        this.closeReactiveTrace(TraceOutcome.FAILURE, 'ReactiveLoop stuck');
+        this.emit('stuck', `No progress: ${info.progressCm}cm over ${info.ticks} ticks`);
+      });
+    }
 
     this.dualLoopEnabled = true;
-    logger.info('VisionLoop', 'Dual-loop mode enabled (SemanticLoop + ReactiveLoop)');
+    logger.info('VisionLoop', `Dual-loop mode enabled [${controlMode}] (SemanticLoop + ${controlMode === 'egocentric' ? 'EgocentricReactiveLoop' : 'ReactiveLoop'})`);
   }
 
   /** Check if dual-loop mode is active. */
@@ -293,7 +343,11 @@ export class VisionLoop extends EventEmitter {
     if (this.dualLoopEnabled) {
       this.semanticLoop!.setGoal(this.currentGoal);
       this.semanticLoop!.start();
-      this.reactiveLoop!.start();
+      if (this.reactiveLoop) {
+        this.reactiveLoop.start();
+      } else if (this.egoReactiveLoop) {
+        this.egoReactiveLoop.start();
+      }
     }
 
     logger.info('VisionLoop', `Starting — goal: "${this.currentGoal}"${this.dualLoopEnabled ? ' [dual-loop]' : ''}`);
@@ -312,6 +366,9 @@ export class VisionLoop extends EventEmitter {
     if (this.dualLoopEnabled) {
       this.semanticLoop?.stop();
       this.reactiveLoop?.stop();
+      if (this.egoReactiveLoop) {
+        this.egoReactiveLoop.stop();
+      }
     }
 
     if (this.reconnectTimer) {

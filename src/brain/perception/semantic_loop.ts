@@ -27,6 +27,7 @@ import type { InferenceFunction } from '../../llmunix-core/interfaces';
 import type { SceneGraph } from '../memory/scene_graph';
 import type { ArenaConfig } from './vision_projector';
 import type { ControllerGoal } from '../../control/reactive_controller';
+import type { EgocentricPerception, FrameTarget, FrameObstacle } from '../../control/egocentric_controller';
 import { projectGeminiObjects } from './vision_projector';
 import { parseGeminiSceneResponse } from './scene_response_parser';
 import { resolveGoalFromText, type ResolvedGoal } from '../planning/goal_resolver';
@@ -35,6 +36,8 @@ import { resolveGoalFromText, type ResolvedGoal } from '../planning/goal_resolve
 // Types
 // =============================================================================
 
+export type ControlMode = 'overhead' | 'egocentric';
+
 export interface SemanticLoopConfig {
   /** Target perception interval in ms. Default 500 (2 Hz). */
   intervalMs?: number;
@@ -42,6 +45,8 @@ export interface SemanticLoopConfig {
   frameHistorySize?: number;
   /** Constraints to append to the perception prompt. */
   constraints?: string[];
+  /** Control mode: 'overhead' (default) or 'egocentric' (first-person camera). */
+  controlMode?: ControlMode;
 }
 
 export interface PerceptionEvent {
@@ -73,6 +78,7 @@ export class SemanticLoop extends EventEmitter {
   private readonly compiler: BytecodeCompiler;
   private readonly arena: ArenaConfig;
   private readonly frameHistorySize: number;
+  private readonly controlMode: ControlMode;
 
   private running = false;
   private processing = false;
@@ -84,8 +90,11 @@ export class SemanticLoop extends EventEmitter {
   // Frame buffer — fed externally via feedFrame()
   private frameBuffer: { base64: string; timestamp: number }[] = [];
 
-  // Resolved goal — shared with ReactiveLoop via event or getter
+  // Resolved goal — shared with ReactiveLoop via event or getter (overhead mode)
   private lastResolvedGoal: ResolvedGoal = { kind: 'explore' };
+
+  // Last egocentric perception — shared with ReactiveLoop (egocentric mode)
+  private lastEgoPerception: EgocentricPerception = { target: null, obstacles: [], timestamp: 0 };
 
   // Stats
   private stats = {
@@ -110,6 +119,7 @@ export class SemanticLoop extends EventEmitter {
     this.intervalMs = config.intervalMs ?? 500;
     this.frameHistorySize = config.frameHistorySize ?? 4;
     this.constraints = config.constraints ?? [];
+    this.controlMode = config.controlMode ?? 'overhead';
   }
 
   // ---------------------------------------------------------------------------
@@ -161,9 +171,19 @@ export class SemanticLoop extends EventEmitter {
     return [...this.constraints];
   }
 
-  /** Get the last resolved goal (for ReactiveLoop to read). */
+  /** Get the last resolved goal (for ReactiveLoop to read in overhead mode). */
   getResolvedGoal(): ResolvedGoal {
     return this.lastResolvedGoal;
+  }
+
+  /** Get the last egocentric perception (for ReactiveLoop in egocentric mode). */
+  getLastEgoPerception(): EgocentricPerception {
+    return this.lastEgoPerception;
+  }
+
+  /** Get the active control mode. */
+  getControlMode(): ControlMode {
+    return this.controlMode;
   }
 
   // ---------------------------------------------------------------------------
@@ -234,8 +254,12 @@ export class SemanticLoop extends EventEmitter {
   private async processPerception(): Promise<void> {
     const frames = this.frameBuffer.map(f => f.base64);
 
-    // Build perception prompt
-    let prompt = this.compiler.getOverheadScenePrompt(this.goal);
+    // Build perception prompt based on control mode
+    const isEgocentric = this.controlMode === 'egocentric';
+    let prompt = isEgocentric
+      ? this.compiler.getFirstPersonPrompt(this.goal)
+      : this.compiler.getOverheadScenePrompt(this.goal);
+
     if (this.constraints.length > 0) {
       prompt += '\n\nADDITIONAL CONTEXT:\n' +
         this.constraints.map(c => `- ${c}`).join('\n');
@@ -243,11 +267,10 @@ export class SemanticLoop extends EventEmitter {
 
     // Call VLM inference
     const startMs = Date.now();
-    const response = await this.infer(
-      prompt,
-      'Detect all objects in this overhead view.',
-      frames,
-    );
+    const userMsg = isEgocentric
+      ? 'Identify the target and obstacles in this first-person camera view.'
+      : 'Detect all objects in this overhead view.';
+    const response = await this.infer(prompt, userMsg, frames);
     const inferenceMs = Date.now() - startMs;
     this.stats.totalInferenceMs += inferenceMs;
 
@@ -263,25 +286,64 @@ export class SemanticLoop extends EventEmitter {
       });
     }
 
-    // Project into SceneGraph (updates in place)
-    if (objects.length > 0) {
-      projectGeminiObjects(this.graph, objects, this.arena);
+    if (isEgocentric) {
+      // Egocentric mode: convert to FrameTarget/FrameObstacle (normalized 0-1)
+      const egoPerception = this.convertToEgoPerception(objects);
+      this.lastEgoPerception = egoPerception;
+      this.emit('egoPerception', egoPerception);
+
+      // Emit standard perception event too (for trace logging)
+      const event: PerceptionEvent = {
+        objects: objects.map(o => ({ label: o.label, box_2d: o.box_2d })),
+        resolvedGoal: this.lastResolvedGoal,
+        inferenceMs,
+        timestamp: Date.now(),
+      };
+      this.emit('perception', event);
+    } else {
+      // Overhead mode: project into SceneGraph and resolve goal
+      if (objects.length > 0) {
+        projectGeminiObjects(this.graph, objects, this.arena);
+      }
+      this.lastResolvedGoal = resolveGoalFromText(this.goal, this.graph);
+
+      const event: PerceptionEvent = {
+        objects: objects.map(o => ({ label: o.label, box_2d: o.box_2d })),
+        resolvedGoal: this.lastResolvedGoal,
+        inferenceMs,
+        timestamp: Date.now(),
+      };
+      this.emit('perception', event);
     }
 
-    // Resolve goal against updated graph
-    this.lastResolvedGoal = resolveGoalFromText(this.goal, this.graph);
+    logger.debug('SemanticLoop', `Perception [${this.controlMode}]: ${objects.length} objects, ${inferenceMs}ms`);
+  }
 
-    // Emit perception event
-    const event: PerceptionEvent = {
-      objects: objects.map(o => ({ label: o.label, box_2d: o.box_2d })),
-      resolvedGoal: this.lastResolvedGoal,
-      inferenceMs,
-      timestamp: Date.now(),
-    };
-    this.emit('perception', event);
+  /**
+   * Convert GeminiObject[] to EgocentricPerception.
+   * Normalizes box_2d from 0-1000 to 0-1 and identifies the target via is_target flag.
+   */
+  private convertToEgoPerception(
+    objects: ReturnType<typeof parseGeminiSceneResponse>,
+  ): EgocentricPerception {
+    let target: FrameTarget | null = null;
+    const obstacles: FrameObstacle[] = [];
 
-    logger.debug('SemanticLoop', `Perception: ${objects.length} objects, ${inferenceMs}ms`, {
-      goal: this.lastResolvedGoal.kind,
-    });
+    for (const obj of objects) {
+      const [ymin, xmin, ymax, xmax] = obj.box_2d;
+      const cx = ((xmin + xmax) / 2) / 1000;
+      const cy = ((ymin + ymax) / 2) / 1000;
+      const width = (xmax - xmin) / 1000;
+      const height = (ymax - ymin) / 1000;
+      const size = width * height;
+
+      if (obj.is_target && !target) {
+        target = { cx, cy, size, label: obj.label };
+      } else {
+        obstacles.push({ cx, cy, size, label: obj.label });
+      }
+    }
+
+    return { target, obstacles, timestamp: Date.now() };
   }
 }

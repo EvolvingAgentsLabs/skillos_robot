@@ -57,6 +57,15 @@
 - Emergency stop: Automatic on host timeout
 - STOP command resets emergency state
 
+## V2.1 Camera-Only Variant (Egocentric)
+- Firmware: `firmware/roclaw_egocentric/` (FreeRTOS, 2 tasks)
+- No IMU: MPU-6050 removed — visual servoing replaces inertial navigation
+- Tasks: Camera (Core 0), Motor (Core 1) — no sensor task
+- Control: First-person visual servoing via EgocentricController
+- Telemetry: Step counts only (`/telemetry` → `{"steps":{"left":N,"right":N},"safety":{...}}`)
+- GPIO: Camera bus + motor pins only (no I2C required)
+- Minimum hardware: ESP32-S3-CAM + 2x 28BYJ-48 + 2x ULN2003
+
 ## V1 Hardware (Deprecated)
 - Motor controller: ESP32-S3-DevKitC-1 (separate from camera)
 - Camera: ESP32-CAM AI-Thinker (separate board)

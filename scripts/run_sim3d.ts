@@ -39,6 +39,8 @@ import { ShadowPerceptionLoop } from '../src/brain/perception/shadow_perception_
 import { ReflexGuard, attachReflexGuard } from '../src/control/reflex_guard';
 import { SceneGraphPolicy } from '../src/brain/perception/scene_graph_policy';
 import { createPerceptionInference } from '../src/brain/inference/gemini_robotics';
+import { EgocentricController } from '../src/control/egocentric_controller';
+import { EgocentricReflexGuard } from '../src/control/egocentric_reflex_guard';
 import type { ArenaConfig } from '../src/brain/perception/vision_projector';
 import type { SelfPerceptionResult } from '../src/brain/perception/self_perception';
 import { SCENARIO_PRESETS } from '../src/shared/scenario_presets';
@@ -76,6 +78,7 @@ let servePort = 8440;
 let collectTraces = true;
 let describeScene = false;
 let scenarioId: string | undefined;
+let useEgocentric = false;
 
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
@@ -113,6 +116,9 @@ for (let i = 0; i < args.length; i++) {
     case '--scene-graph':
       // SceneGraphPolicy is always active — flag kept for backwards compat
       break;
+    case '--egocentric':
+      useEgocentric = true;
+      break;
     case '--scenario':
       scenarioId = args[++i] || '';
       break;
@@ -127,6 +133,7 @@ Options:
   --gemini              Use Gemini Robotics-ER instead of Qwen-VL (requires GOOGLE_API_KEY)
   --ollama              Use Ollama with a fine-tuned local model
   --ollama-model <name> Ollama model name (default: roclaw-nav:q8_0)
+  --egocentric          First-person visual servoing (camera-only, no IMU)
   --serve               Start HTTP tool server instead of running a single goal
   --serve-port <port>   Port for the HTTP tool server (default: 8440)
   --no-traces           Disable trace file collection
@@ -145,6 +152,7 @@ Examples:
   npx tsx scripts/run_sim3d.ts --goal "the door" --constraints "stay close to walls"
   GOOGLE_API_KEY=... npx tsx scripts/run_sim3d.ts --gemini --goal "find the red cube"
   npx tsx scripts/run_sim3d.ts --ollama --goal "find the red cube"  # Local fine-tuned model
+  npx tsx scripts/run_sim3d.ts --gemini --egocentric --goal "go to the red cube"  # Camera-only
   npx tsx scripts/run_sim3d.ts --serve --gemini  # Tool server on :8440
   # Collect traces with scene descriptions for gap analysis:
   npx tsx scripts/run_sim3d.ts --gemini --describe-scene --goal "find the red cube"
@@ -184,6 +192,7 @@ async function main(): Promise<void> {
   } else {
     logger.info('Sim3D', `Mode: ${mode}${mode === 'go_to' ? ` | Goal: "${goal}"` : ''}`);
   }
+  if (useEgocentric) logger.info('Sim3D', 'Control: EGOCENTRIC (first-person camera, no IMU)');
   if (constraints) logger.info('Sim3D', `Constraints: "${constraints}"`);
   if (collectTraces) logger.info('Sim3D', 'Trace collection enabled → traces/sim3d/');
   if (describeScene) logger.info('Sim3D', 'Scene description enabled (gap analysis)');
@@ -384,8 +393,30 @@ async function main(): Promise<void> {
   const detach = attachReflexGuard(transmitter, reflexGuard);
   logger.info('Sim3D', 'Reflex Guard attached (mode: active)');
 
-  // 6e. Scene Graph Policy — perception-driven motor control
-  if (useGemini) {
+  // 6e. Scene Graph Policy / Egocentric Dual-Loop — perception-driven motor control
+  if (useEgocentric && useGemini) {
+    // Egocentric mode: first-person visual servoing via dual-loop
+    const googleApiKey = process.env.GOOGLE_API_KEY!;
+    const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
+    const perceptionInfer = createPerceptionInference({
+      apiKey: googleApiKey,
+      model: geminiModel,
+    });
+    const egoController = new EgocentricController();
+    const egoGuard = new EgocentricReflexGuard();
+    visionLoop.enableDualLoop({
+      graph: sceneGraph,
+      controller: new ReactiveController(), // unused but required by interface
+      guard: reflexGuard,
+      arena: ARENA,
+      perceptionInfer,
+      controlMode: 'egocentric',
+      egoController,
+      egoGuard,
+    });
+    logger.info('Sim3D', `Egocentric mode: first-person camera, no IMU (model: ${geminiModel})`);
+  } else if (useGemini) {
+    // Overhead mode: SceneGraphPolicy (legacy)
     const googleApiKey = process.env.GOOGLE_API_KEY!;
     const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
     const perceptionInfer = createPerceptionInference({

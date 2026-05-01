@@ -318,6 +318,16 @@ export class BytecodeCompiler {
     return OVERHEAD_SCENE_PROMPT.replace('{{GOAL}}', goal);
   }
 
+  /**
+   * Get the system prompt for first-person egocentric visual servoing.
+   * The VLM identifies the target and obstacles from the robot's onboard
+   * forward-facing camera. A downstream EgocentricController uses bbox
+   * positions in the frame to decide motor commands.
+   */
+  getFirstPersonPrompt(goal: string): string {
+    return FIRST_PERSON_SCENE_PROMPT.replace('{{GOAL}}', goal);
+  }
+
   getStats(): CompilerStats {
     return { ...this.stats };
   }
@@ -618,6 +628,53 @@ Output ONLY valid JSON, no markdown fences, in this exact shape:
 
 box_2d coordinates MUST be normalized to the 0-1000 range. Image origin is
 top-left; xmin < xmax and ymin < ymax. Omit objects you cannot see.`;
+
+// =============================================================================
+// First-Person Scene Prompt (for egocentric visual servoing — camera-only V1)
+// =============================================================================
+
+const FIRST_PERSON_SCENE_PROMPT = `You are the perception engine for a ground-level mobile robot.
+You are viewing the world from the robot's ONBOARD forward-facing camera (first-person, ~65° FOV, 320×240).
+
+GOAL: {{GOAL}}
+
+Your job is to identify the TARGET object and any OBSTACLES visible in the current camera frame.
+You do NOT issue motor commands — a downstream controller decides motion from the positions you return.
+
+Identify and report:
+  - The target object referenced by the goal (if visible). Mark it with "is_target": true.
+  - Any obstacle that could block forward motion (walls, boxes, furniture, floor objects).
+    Mark these with "is_target": false.
+
+Do NOT report the robot itself — you cannot see yourself from first-person view.
+
+For each detected object, provide:
+  - label: descriptive name (e.g. "red cube", "wooden wall")
+  - box_2d: bounding box as [ymin, xmin, ymax, xmax] normalized 0-1000
+  - is_target: true for the goal object, false for obstacles
+  - estimated_distance_cm: your best estimate of how far the object is from the camera
+
+Output ONLY valid JSON, no markdown fences, in this exact shape:
+{
+  "objects": [
+    {
+      "label": "red cube",
+      "box_2d": [ymin, xmin, ymax, xmax],
+      "is_target": true,
+      "estimated_distance_cm": 45
+    },
+    {
+      "label": "wall",
+      "box_2d": [ymin, xmin, ymax, xmax],
+      "is_target": false,
+      "estimated_distance_cm": 20
+    }
+  ]
+}
+
+box_2d coordinates MUST be normalized to the 0-1000 range. Image origin is
+top-left; xmin < xmax and ymin < ymax.
+If the target is NOT visible in the frame, return {"objects": []}.`;
 
 // =============================================================================
 // Text-Scene System Prompt (for text-based dream simulation — no video/images)

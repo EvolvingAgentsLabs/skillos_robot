@@ -18,6 +18,9 @@ cd skillos_robot && npm install
 # Navigate in simulation (cloud teacher — Gemini)
 robot navigate "go to the red cube"
 
+# Navigate with first-person camera (no IMU required)
+robot navigate --egocentric "go to the red cube"
+
 # Navigate with local model (no internet)
 robot navigate --local "go through the doorway"
 
@@ -61,6 +64,10 @@ robot test
 Two decoupled loops run concurrently:
 - **Semantic loop** (1–2 Hz) — a VLM perceives the scene and updates a shared SceneGraph
 - **Reactive loop** (10–20 Hz) — a deterministic controller reads the SceneGraph and emits 6-byte motor commands over UDP to the ESP32-S3
+
+Two control modes:
+- **Overhead** (default) — external camera views the arena from above, SceneGraph coordinates, IMU-aided heading
+- **Egocentric** (`--egocentric`) — first-person camera only. Target position in frame drives turns/forward. No IMU, no absolute coordinates. "If the target is left of center, turn left."
 
 Every run produces a YAML-frontmatter markdown trace. Failed traces get retried in MuJoCo simulation during dream consolidation and fed back as training data.
 
