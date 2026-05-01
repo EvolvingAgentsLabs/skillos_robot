@@ -13,12 +13,12 @@
 
 import * as dotenv from 'dotenv';
 import { logger } from './shared/logger';
-import { BytecodeCompiler } from './2_qwen_cerebellum/bytecode_compiler';
-import { UDPTransmitter } from './2_qwen_cerebellum/udp_transmitter';
-import { VisionLoop } from './2_qwen_cerebellum/vision_loop';
-import { GeminiRoboticsInference } from './2_qwen_cerebellum/gemini_robotics';
-import { CortexNode } from './1_openclaw_cortex/index';
-import type { ToolContext } from './1_openclaw_cortex/roclaw_tools';
+import { BytecodeCompiler } from './control/bytecode_compiler';
+import { UDPTransmitter } from './bridge/udp_transmitter';
+import { VisionLoop } from './brain/perception/vision_loop';
+import { GeminiRoboticsInference } from './brain/inference/gemini_robotics';
+import { CortexNode } from './brain/planning/index';
+import type { ToolContext } from './brain/planning/roclaw_tools';
 
 // Load .env
 dotenv.config();
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   // 4. Initialize vision loop (rolling video buffer for temporal/3D perception)
   const cameraUrl = `http://${config.cameraHost}:${config.cameraPort}${config.cameraPath}`;
   const visionLoop = new VisionLoop(
-    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: true },
+    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize },
     compiler,
     transmitter,
     infer,

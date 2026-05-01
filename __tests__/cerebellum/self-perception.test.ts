@@ -4,8 +4,8 @@ import {
   interpretDelta,
   SelfPerceptionMonitor,
   DEFAULT_SELF_PERCEPTION_CONFIG,
-} from '../../src/2_qwen_cerebellum/self_perception';
-import { Opcode } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/brain/perception/self_perception';
+import { Opcode } from '../../src/control/bytecode_compiler';
 
 // =============================================================================
 // Helper: create a solid-color JPEG buffer

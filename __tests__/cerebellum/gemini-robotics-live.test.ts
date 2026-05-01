@@ -12,7 +12,7 @@ import {
   GeminiRoboticsInference,
   ROCLAW_TOOL_DECLARATIONS,
   createGeminiInference,
-} from '../../src/2_qwen_cerebellum/gemini_robotics';
+} from '../../src/brain/inference/gemini_robotics';
 import {
   BytecodeCompiler,
   Opcode,
@@ -21,7 +21,7 @@ import {
   FRAME_START,
   FRAME_END,
   FRAME_SIZE,
-} from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/bytecode_compiler';
 
 // =============================================================================
 // Skip if no API key

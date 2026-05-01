@@ -1,4 +1,4 @@
-import { parseGeminiSceneResponse } from '../../src/2_qwen_cerebellum/scene_response_parser';
+import { parseGeminiSceneResponse } from '../../src/brain/perception/scene_response_parser';
 
 describe('parseGeminiSceneResponse — valid inputs', () => {
   test('valid JSON with multiple objects returns all', () => {

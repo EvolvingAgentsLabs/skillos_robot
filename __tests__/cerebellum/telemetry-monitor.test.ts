@@ -1,5 +1,5 @@
-import { TelemetryMonitor } from '../../src/2_qwen_cerebellum/telemetry_monitor';
-import { encodeFrame, Opcode } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+import { TelemetryMonitor } from '../../src/brain/perception/telemetry_monitor';
+import { encodeFrame, Opcode } from '../../src/control/bytecode_compiler';
 
 function makeTelemetry(overrides: Record<string, any> = {}): Buffer {
   const msg = {

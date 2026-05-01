@@ -1,9 +1,9 @@
 import * as dgram from 'dgram';
-import { UDPTransmitter } from '../../src/2_qwen_cerebellum/udp_transmitter';
+import { UDPTransmitter } from '../../src/bridge/udp_transmitter';
 import {
   encodeFrame, encodeFrameV2, decodeFrameV2, Opcode, FRAME_SIZE, FRAME_SIZE_V2,
   ACK_FLAG, ACK_OPCODE,
-} from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/bytecode_compiler';
 
 describe('UDPTransmitter', () => {
   let transmitter: UDPTransmitter;

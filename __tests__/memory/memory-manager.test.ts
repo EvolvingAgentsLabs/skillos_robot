@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MemoryManager } from '../../src/3_llmunix_memory/memory_manager';
+import { MemoryManager } from '../../src/brain/memory/memory_manager';
 
 describe('MemoryManager', () => {
   let mm: MemoryManager;
@@ -35,7 +35,7 @@ describe('MemoryManager', () => {
   describe('getHardwareProfile', () => {
     test('reads hardware.md from system directory', () => {
       const hw = mm.getHardwareProfile();
-      expect(hw).toContain('RoClaw V1');
+      expect(hw).toContain('RoClaw V2');
       expect(hw).toContain('28BYJ-48');
       expect(hw).toContain('4.71 cm/s');
     });
@@ -91,7 +91,7 @@ describe('MemoryManager', () => {
       const ctx = mm.getFullContext();
       expect(ctx).toContain('## Hardware');
       expect(ctx).toContain('## Identity');
-      expect(ctx).toContain('RoClaw V1');
+      expect(ctx).toContain('RoClaw V2');
       expect(ctx).toContain('Cortex');
     });
 

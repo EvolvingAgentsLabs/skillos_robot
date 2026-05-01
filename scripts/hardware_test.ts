@@ -19,8 +19,8 @@
 
 import * as dgram from 'dgram';
 import * as dotenv from 'dotenv';
-import { encodeFrame, formatHex, decodeFrame, Opcode, type BytecodeFrame } from '../src/2_qwen_cerebellum/bytecode_compiler';
-import { ExternalCameraSource } from '../src/2_qwen_cerebellum/external_camera';
+import { encodeFrame, formatHex, decodeFrame, Opcode, type BytecodeFrame } from '../src/control/bytecode_compiler';
+import { ExternalCameraSource } from '../src/brain/perception/external_camera';
 
 dotenv.config();
 
@@ -381,9 +381,9 @@ async function testNavigate(goal: string): Promise<void> {
   console.log('Starting VisionLoop for 30 seconds...\n');
 
   // Import the full stack dynamically to avoid loading when not needed
-  const { BytecodeCompiler } = await import('../src/2_qwen_cerebellum/bytecode_compiler');
-  const { UDPTransmitter } = await import('../src/2_qwen_cerebellum/udp_transmitter');
-  const { VisionLoop } = await import('../src/2_qwen_cerebellum/vision_loop');
+  const { BytecodeCompiler } = await import('../src/control/bytecode_compiler');
+  const { UDPTransmitter } = await import('../src/bridge/udp_transmitter');
+  const { VisionLoop } = await import('../src/brain/perception/vision_loop');
 
   const compiler = new BytecodeCompiler('fewshot');
   const transmitter = new UDPTransmitter({ host: ESP32_HOST, port: ESP32_PORT });
@@ -393,7 +393,7 @@ async function testNavigate(goal: string): Promise<void> {
   let infer: (system: string, user: string, images: string[]) => Promise<string>;
 
   if (process.env.GOOGLE_API_KEY) {
-    const { GeminiRoboticsInference } = await import('../src/2_qwen_cerebellum/gemini_robotics');
+    const { GeminiRoboticsInference } = await import('../src/brain/inference/gemini_robotics');
     const inference = new GeminiRoboticsInference({
       apiKey: process.env.GOOGLE_API_KEY,
       model: process.env.GEMINI_MODEL || 'gemini-3-flash-preview',

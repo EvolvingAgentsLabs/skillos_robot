@@ -1,0 +1,172 @@
+{
+  "nodes": [
+    {
+      "id": "loc_7",
+      "label": "hallway",
+      "description": "Mock hallway scene",
+      "features": [
+        "refrigerator",
+        "white cabinets",
+        "gray couch",
+        "flat-screen TV",
+        "hardwood floor",
+        "multiple doorways"
+      ],
+      "navigationHints": [
+        "doorway ahead",
+        "passage to the left"
+      ],
+      "visitCount": 1,
+      "firstVisited": 1777592900573,
+      "lastVisited": 1777592900573,
+      "position": {
+        "x": 0,
+        "y": 150,
+        "heading": 0
+      },
+      "featureFingerprint": "3eacd898"
+    },
+    {
+      "id": "loc_8",
+      "label": "kitchen",
+      "description": "Mock kitchen scene",
+      "features": [
+        "gas stove",
+        "refrigerator",
+        "white cabinets",
+        "granite countertops",
+        "tile floor",
+        "dining table",
+        "sink",
+        "multiple doorways"
+      ],
+      "navigationHints": [
+        "doorway ahead",
+        "passage to the left"
+      ],
+      "visitCount": 1,
+      "firstVisited": 1777592900574,
+      "lastVisited": 1777592900574,
+      "position": {
+        "x": 100,
+        "y": 150,
+        "heading": 90
+      },
+      "featureFingerprint": "85d2cb8c"
+    },
+    {
+      "id": "loc_9",
+      "label": "living room",
+      "description": "Mock living room scene",
+      "features": [
+        "gray couch",
+        "flat-screen TV",
+        "coffee table",
+        "bookshelf",
+        "blue area rug",
+        "hardwood floor",
+        "multiple doorways"
+      ],
+      "navigationHints": [
+        "doorway ahead",
+        "passage to the left"
+      ],
+      "visitCount": 1,
+      "firstVisited": 1777592900574,
+      "lastVisited": 1777592900574,
+      "position": {
+        "x": -100,
+        "y": 150,
+        "heading": 270
+      },
+      "featureFingerprint": "61f2a064"
+    },
+    {
+      "id": "loc_10",
+      "label": "bedroom",
+      "description": "Mock bedroom scene",
+      "features": [
+        "nightstands",
+        "wooden dresser",
+        "blue comforter",
+        "carpet floor",
+        "desk"
+      ],
+      "navigationHints": [
+        "doorway ahead",
+        "passage to the left"
+      ],
+      "visitCount": 1,
+      "firstVisited": 1777592900574,
+      "lastVisited": 1777592900574,
+      "position": {
+        "x": 0,
+        "y": 300,
+        "heading": 0
+      },
+      "featureFingerprint": "4f7ddf36"
+    },
+    {
+      "id": "loc_11",
+      "label": "bathroom",
+      "description": "Mock bathroom scene",
+      "features": [
+        "white cabinets",
+        "sink",
+        "toilet",
+        "bathtub",
+        "pedestal sink",
+        "medicine cabinet",
+        "hexagonal tile floor"
+      ],
+      "navigationHints": [
+        "doorway ahead",
+        "passage to the left"
+      ],
+      "visitCount": 1,
+      "firstVisited": 1777592900575,
+      "lastVisited": 1777592900575,
+      "position": {
+        "x": 50,
+        "y": 0,
+        "heading": 90
+      },
+      "featureFingerprint": "ace16e91"
+    }
+  ],
+  "edges": [
+    {
+      "from": "loc_7",
+      "to": "loc_8",
+      "action": "turned right into kitchen",
+      "estimatedSteps": 0,
+      "traversalCount": 1,
+      "lastTraversed": 1777592900574
+    },
+    {
+      "from": "loc_8",
+      "to": "loc_9",
+      "action": "returned to hallway and turned left",
+      "estimatedSteps": 0,
+      "traversalCount": 1,
+      "lastTraversed": 1777592900574
+    },
+    {
+      "from": "loc_9",
+      "to": "loc_10",
+      "action": "returned to hallway and went to end",
+      "estimatedSteps": 0,
+      "traversalCount": 1,
+      "lastTraversed": 1777592900574
+    },
+    {
+      "from": "loc_10",
+      "to": "loc_11",
+      "action": "returned to hallway and entered bathroom",
+      "estimatedSteps": 0,
+      "traversalCount": 1,
+      "lastTraversed": 1777592900575
+    }
+  ],
+  "currentNodeId": "loc_11"
+}

@@ -36,7 +36,7 @@ dotenv.config();
 
 const ROCLAW_ROOT = path.resolve(__dirname, '..');
 const TRACES_DIR = path.join(ROCLAW_ROOT, 'traces', 'sim3d');
-const STRATEGIES_DIR = path.join(ROCLAW_ROOT, 'src', '3_llmunix_memory', 'strategies');
+const STRATEGIES_DIR = path.join(ROCLAW_ROOT, 'src', 'brain', 'memory', 'strategies');
 const LEVEL_2_DIR = path.join(STRATEGIES_DIR, 'level_2_routes');
 const LEVEL_4_DIR = path.join(STRATEGIES_DIR, 'level_4_motor');
 const CONSTRAINTS_FILE = path.join(STRATEGIES_DIR, '_negative_constraints.md');
@@ -51,13 +51,28 @@ const INTER_TRIAL_PAUSE_MS = 5000;
 // CLI args
 let TRIALS_PER_PHASE = 3;
 let GOAL = 'navigate to the red cube';
+let USE_LOCAL = false;
+let LOCAL_MODEL = process.env.OLLAMA_MODEL || 'qwen3:8b';
+let OLLAMA_BASE_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--trials') TRIALS_PER_PHASE = parseInt(args[++i] || '3', 10);
   if (args[i] === '--goal') GOAL = args[++i] || GOAL;
+  if (args[i] === '--local') USE_LOCAL = true;
+  if (args[i] === '--model') LOCAL_MODEL = args[++i] || LOCAL_MODEL;
+  if (args[i] === '--ollama-url') OLLAMA_BASE_URL = args[++i] || OLLAMA_BASE_URL;
   if (args[i] === '--help') {
-    console.log(`Usage: npx tsx scripts/dream_loop.ts [--trials N] [--goal "..."]`);
+    console.log(`Usage: npx tsx scripts/dream_loop.ts [OPTIONS]
+
+Options:
+  --trials N         Trials per phase (default: 3)
+  --goal "..."       Navigation goal (default: "navigate to the red cube")
+  --local            Use local Ollama model instead of Gemini ($0 cost)
+  --model NAME       Ollama model name (default: qwen3:8b)
+  --ollama-url URL   Ollama base URL (default: http://localhost:11434)
+  --help             Show this help message
+`);
     process.exit(0);
   }
 }
@@ -149,6 +164,107 @@ function listTraces(): string[] {
     .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
 }
 
+// =============================================================================
+// RAG-Style Strategy Retrieval (Phase 4b)
+// =============================================================================
+
+interface ScoredStrategy {
+  title: string;
+  content: string;
+  score: number;
+}
+
+/**
+ * Load existing strategies, score by keyword overlap with the given context
+ * (goal + detected objects/patterns), return top-N as context injection.
+ * This reduces prompt bloat from ~2000 tokens to ~400 tokens.
+ */
+function retrieveRelevantStrategies(contextKeywords: string[], topN: number = 3): string {
+  const allStrategies: ScoredStrategy[] = [];
+
+  // Scan all level directories for strategy markdown files
+  const levelDirs = ['level_1_goals', 'level_2_routes', 'level_3_tactical', 'level_4_motor'];
+  for (const dir of levelDirs) {
+    const dirPath = path.join(STRATEGIES_DIR, dir);
+    if (!fs.existsSync(dirPath)) continue;
+
+    const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.md'));
+    for (const f of files) {
+      const content = fs.readFileSync(path.join(dirPath, f), 'utf-8');
+      const titleMatch = content.match(/^title:\s*"?([^"\n]+)"?/m);
+      const title = titleMatch ? titleMatch[1] : f.replace('.md', '');
+
+      // Score by keyword overlap
+      const contentLower = content.toLowerCase();
+      let score = 0;
+      for (const kw of contextKeywords) {
+        const kwLower = kw.toLowerCase();
+        // Count occurrences (capped at 3 per keyword to avoid single-keyword dominance)
+        const matches = contentLower.split(kwLower).length - 1;
+        score += Math.min(matches, 3);
+      }
+
+      if (score > 0) {
+        // Truncate content to essential parts (frontmatter + first 500 chars of body)
+        const truncated = content.slice(0, 500);
+        allStrategies.push({ title, content: truncated, score });
+      }
+    }
+  }
+
+  // Also check _negative_constraints.md
+  if (fs.existsSync(CONSTRAINTS_FILE)) {
+    const constraintContent = fs.readFileSync(CONSTRAINTS_FILE, 'utf-8');
+    const sections = constraintContent.split(/^###\s+/m).filter(Boolean);
+    for (const section of sections.slice(0, 10)) { // Cap at 10 constraints
+      const sectionLower = section.toLowerCase();
+      let score = 0;
+      for (const kw of contextKeywords) {
+        if (sectionLower.includes(kw.toLowerCase())) score++;
+      }
+      if (score > 0) {
+        allStrategies.push({
+          title: `Constraint: ${section.split('\n')[0].trim()}`,
+          content: section.slice(0, 200),
+          score,
+        });
+      }
+    }
+  }
+
+  // Sort by score descending, take top-N
+  allStrategies.sort((a, b) => b.score - a.score);
+  const topStrategies = allStrategies.slice(0, topN);
+
+  if (topStrategies.length === 0) return '';
+
+  const injection = topStrategies.map(s =>
+    `### Previously Learned: ${s.title}\n${s.content.trim()}`
+  ).join('\n\n');
+
+  return `\n\n---\n## Relevant Prior Knowledge (top ${topStrategies.length} strategies)\n\n${injection}\n\n---\n`;
+}
+
+/** Extract keywords from traces for RAG scoring. */
+function extractKeywords(traces: TraceMeta[]): string[] {
+  const keywords = new Set<string>();
+  // Add goal words
+  for (const t of traces) {
+    for (const word of t.goal.split(/\s+/)) {
+      if (word.length > 3) keywords.add(word.toLowerCase());
+    }
+  }
+  // Add common navigation terms found in trace bodies
+  const navTerms = ['rotate', 'forward', 'backward', 'obstacle', 'target', 'stuck', 'collision', 'turn'];
+  for (const t of traces) {
+    const bodyLower = t.body.toLowerCase();
+    for (const term of navTerms) {
+      if (bodyLower.includes(term)) keywords.add(term);
+    }
+  }
+  return Array.from(keywords);
+}
+
 /** Call Gemini text API (no images, no tool calling). */
 async function callGemini(systemPrompt: string, userPrompt: string): Promise<string> {
   if (!GEMINI_API_KEY) {
@@ -184,6 +300,59 @@ async function callGemini(systemPrompt: string, userPrompt: string): Promise<str
   const text = data.candidates?.[0]?.content?.parts?.find(p => p.text)?.text;
   if (!text) throw new Error('Empty response from Gemini');
   return text;
+}
+
+/** Call Ollama local model API (text-only, $0 cost). */
+async function callOllama(systemPrompt: string, userPrompt: string): Promise<string> {
+  const url = `${OLLAMA_BASE_URL}/api/generate`;
+
+  const body = {
+    model: LOCAL_MODEL,
+    system: systemPrompt,
+    prompt: userPrompt,
+    stream: false,
+    options: {
+      temperature: 0.4,
+      num_predict: 2048,
+    },
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000); // 2 min timeout for local models
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'Unknown error');
+      throw new Error(`Ollama API error ${response.status}: ${errorBody.slice(0, 200)}`);
+    }
+
+    const data = await response.json() as {
+      response: string;
+      done: boolean;
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
+
+    if (!data.response) {
+      throw new Error('Empty response from Ollama');
+    }
+
+    return data.response.trim();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Unified LLM call — routes to Gemini or Ollama based on --local flag. */
+async function callLLM(systemPrompt: string, userPrompt: string): Promise<string> {
+  return USE_LOCAL ? callOllama(systemPrompt, userPrompt) : callGemini(systemPrompt, userPrompt);
 }
 
 // =============================================================================
@@ -418,6 +587,13 @@ async function dreamConsolidate(traceFiles: string[]): Promise<DreamResult> {
 
   log('DREAM', `Phase 1 (SWS): ${successes.length} successes, ${failures.length} failures`);
 
+  // RAG: Extract keywords and retrieve relevant prior strategies
+  const keywords = extractKeywords(traces);
+  const ragContext = retrieveRelevantStrategies(keywords, 3);
+  if (ragContext) {
+    log('DREAM', `  RAG: Injecting ${keywords.length} keywords → found relevant prior strategies`);
+  }
+
   let constraintsLearned = 0;
   let strategiesCreated = 0;
 
@@ -427,10 +603,10 @@ async function dreamConsolidate(traceFiles: string[]): Promise<DreamResult> {
 
     const failureContext = failures.map(t =>
       `## Trace: ${t.filename}\nGoal: ${t.goal}\nOutcome: ${t.outcome} (${t.outcome_reason})\nFrames: ${t.frames}, Duration: ${t.duration_ms}ms\n\n${t.body.slice(0, 2000)}`
-    ).join('\n\n---\n\n');
+    ).join('\n\n---\n\n') + ragContext;
 
     try {
-      const response = await callGemini(FAILURE_ANALYSIS_SYSTEM, failureContext);
+      const response = await callLLM(FAILURE_ANALYSIS_SYSTEM, failureContext);
       let cleanedFailure = response.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       const arrayMatch = cleanedFailure.match(/\[[\s\S]*\]/);
       if (!arrayMatch) throw new Error('No JSON array found in Gemini response');
@@ -479,10 +655,10 @@ async function dreamConsolidate(traceFiles: string[]): Promise<DreamResult> {
 
     const successContext = successes.map(t =>
       `## Trace: ${t.filename}\nGoal: ${t.goal}\nOutcome: ${t.outcome} (${t.outcome_reason})\nFrames: ${t.frames}, Duration: ${t.duration_ms}ms, Confidence: ${t.confidence}\n\n${t.body.slice(0, 3000)}`
-    ).join('\n\n---\n\n');
+    ).join('\n\n---\n\n') + ragContext;
 
     try {
-      const response = await callGemini(STRATEGY_ABSTRACTION_SYSTEM, successContext);
+      const response = await callLLM(STRATEGY_ABSTRACTION_SYSTEM, successContext);
       // Extract JSON from response — handle markdown fences and surrounding text
       let cleaned = response.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
@@ -531,7 +707,7 @@ async function dreamConsolidate(traceFiles: string[]): Promise<DreamResult> {
       `Average duration (success): ${successes.length > 0 ? Math.round(successes.reduce((a, t) => a + t.duration_ms, 0) / successes.length / 1000) + 's' : 'N/A'}`,
     ].join('\n');
 
-    summaryText = await callGemini(DREAM_SUMMARY_SYSTEM, journalPrompt);
+    summaryText = await callLLM(DREAM_SUMMARY_SYSTEM, journalPrompt);
   } catch {
     // Use default summary
   }
@@ -691,6 +867,7 @@ function printReport(
 // =============================================================================
 
 async function main(): Promise<void> {
+  const inferenceLabel = USE_LOCAL ? `Ollama (${LOCAL_MODEL})` : `Gemini (${DREAM_MODEL})`;
   console.log(`
 ${'='.repeat(55)}
   DREAM LOOP EXPERIMENT
@@ -698,12 +875,13 @@ ${'='.repeat(55)}
 ${'='.repeat(55)}
   Goal: "${GOAL}"
   Trials per phase: ${TRIALS_PER_PHASE}
-  Dream model: ${DREAM_MODEL}
+  Dream inference: ${inferenceLabel}
+  ${USE_LOCAL ? `Ollama URL: ${OLLAMA_BASE_URL}` : ''}
 ${'='.repeat(55)}
 `);
 
-  if (!GEMINI_API_KEY) {
-    console.error('ERROR: GOOGLE_API_KEY environment variable is required');
+  if (!USE_LOCAL && !GEMINI_API_KEY) {
+    console.error('ERROR: GOOGLE_API_KEY environment variable is required (or use --local for Ollama)');
     process.exit(1);
   }
 

@@ -3,7 +3,7 @@ import {
   ROCLAW_TOOL_DECLARATIONS,
   createGeminiInference,
   type GeminiInferenceConfig,
-} from '../../src/2_qwen_cerebellum/gemini_robotics';
+} from '../../src/brain/inference/gemini_robotics';
 
 // =============================================================================
 // Mock fetch

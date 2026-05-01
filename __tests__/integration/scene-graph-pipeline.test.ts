@@ -17,15 +17,15 @@ import {
   projectGeminiObjects,
   type GeminiObject,
   type ArenaConfig,
-} from '../../src/2_qwen_cerebellum/vision_projector';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
-import { ReactiveController } from '../../src/1_openclaw_cortex/reactive_controller';
+} from '../../src/brain/perception/vision_projector';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
+import { ReactiveController } from '../../src/control/reactive_controller';
 import {
   ReflexGuard,
   attachReflexGuard,
   type SendableTransmitter,
-} from '../../src/2_qwen_cerebellum/reflex_guard';
-import { Opcode, decodeFrame } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/reflex_guard';
+import { Opcode, decodeFrame } from '../../src/control/bytecode_compiler';
 
 const ARENA: ArenaConfig = { widthCm: 300, heightCm: 200 };
 

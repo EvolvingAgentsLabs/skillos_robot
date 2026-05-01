@@ -4,8 +4,8 @@ import {
   projectGeminiObjects,
   type ArenaConfig,
   type GeminiObject,
-} from '../../src/2_qwen_cerebellum/vision_projector';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
+} from '../../src/brain/perception/vision_projector';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
 
 const ARENA_300x200: ArenaConfig = { widthCm: 300, heightCm: 200 };
 

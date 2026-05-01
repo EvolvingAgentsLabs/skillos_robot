@@ -3,11 +3,11 @@
  * MuJoCo velocity actuator controls [left_rad_s, right_rad_s].
  */
 
-import { bytecodeToCtrl, speedParamToRadS, MAX_WHEEL_RAD_S } from '../../src/mjswan_bridge';
+import { bytecodeToCtrl, speedParamToRadS, MAX_WHEEL_RAD_S } from '../../src/bridge/mjswan_bridge';
 import {
   Opcode, encodeFrame, encodeFrameV2, decodeFrameAuto, ACK_FLAG,
   type BytecodeFrame,
-} from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/bytecode_compiler';
 
 describe('MAX_WHEEL_RAD_S constant', () => {
   it('equals (1024/4096) * 2 * PI ~= 1.5708', () => {

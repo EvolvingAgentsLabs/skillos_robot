@@ -4,10 +4,10 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { HierarchicalPlanner } from '../../src/1_openclaw_cortex/planner';
-import { MemoryManager } from '../../src/3_llmunix_memory/memory_manager';
-import { HierarchyLevel, type Strategy } from '../../src/3_llmunix_memory/trace_types';
-import type { InferenceFunction } from '../../src/2_qwen_cerebellum/inference';
+import { HierarchicalPlanner } from '../../src/brain/planning/planner';
+import { MemoryManager } from '../../src/brain/memory/memory_manager';
+import { HierarchyLevel, type Strategy } from '../../src/brain/memory/trace_types';
+import type { InferenceFunction } from '../../src/brain/inference/inference';
 
 // =============================================================================
 // Test fixtures

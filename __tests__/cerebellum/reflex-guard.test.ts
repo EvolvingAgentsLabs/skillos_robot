@@ -3,9 +3,9 @@ import {
   attachReflexGuard,
   type ReflexMode,
   type SendableTransmitter,
-} from '../../src/2_qwen_cerebellum/reflex_guard';
-import { SceneGraph } from '../../src/3_llmunix_memory/scene_graph';
-import { encodeFrame, Opcode, FRAME_SIZE } from '../../src/2_qwen_cerebellum/bytecode_compiler';
+} from '../../src/control/reflex_guard';
+import { SceneGraph } from '../../src/brain/memory/scene_graph';
+import { encodeFrame, Opcode, FRAME_SIZE } from '../../src/control/bytecode_compiler';
 
 // =============================================================================
 // Helpers

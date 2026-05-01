@@ -24,23 +24,23 @@ import * as http from 'http';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { logger } from '../src/shared/logger';
-import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from '../src/2_qwen_cerebellum/bytecode_compiler';
-import { UDPTransmitter } from '../src/2_qwen_cerebellum/udp_transmitter';
-import { VisionLoop } from '../src/2_qwen_cerebellum/vision_loop';
-import { CerebellumInference } from '../src/2_qwen_cerebellum/inference';
-import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/2_qwen_cerebellum/gemini_robotics';
-import { handleTool, type ToolContext } from '../src/1_openclaw_cortex/roclaw_tools';
+import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from '../src/control/bytecode_compiler';
+import { UDPTransmitter } from '../src/bridge/udp_transmitter';
+import { VisionLoop } from '../src/brain/perception/vision_loop';
+import { CerebellumInference } from '../src/brain/inference/inference';
+import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/brain/inference/gemini_robotics';
+import { handleTool, type ToolContext } from '../src/brain/planning/roclaw_tools';
 import { TraceSource, TraceOutcome } from '../src/llmunix-core/types';
-import { TelemetryMonitor } from '../src/2_qwen_cerebellum/telemetry_monitor';
-import { Sim3DTraceCollector } from '../src/3_llmunix_memory/sim3d_trace_collector';
-import { SceneGraph } from '../src/3_llmunix_memory/scene_graph';
-import { ReactiveController } from '../src/1_openclaw_cortex/reactive_controller';
-import { ShadowPerceptionLoop } from '../src/2_qwen_cerebellum/shadow_perception_loop';
-import { ReflexGuard, attachReflexGuard } from '../src/2_qwen_cerebellum/reflex_guard';
-import { SceneGraphPolicy } from '../src/2_qwen_cerebellum/scene_graph_policy';
-import { createPerceptionInference } from '../src/2_qwen_cerebellum/gemini_robotics';
-import type { ArenaConfig } from '../src/2_qwen_cerebellum/vision_projector';
-import type { SelfPerceptionResult } from '../src/2_qwen_cerebellum/self_perception';
+import { TelemetryMonitor } from '../src/brain/perception/telemetry_monitor';
+import { Sim3DTraceCollector } from '../src/brain/memory/sim3d_trace_collector';
+import { SceneGraph } from '../src/brain/memory/scene_graph';
+import { ReactiveController } from '../src/control/reactive_controller';
+import { ShadowPerceptionLoop } from '../src/brain/perception/shadow_perception_loop';
+import { ReflexGuard, attachReflexGuard } from '../src/control/reflex_guard';
+import { SceneGraphPolicy } from '../src/brain/perception/scene_graph_policy';
+import { createPerceptionInference } from '../src/brain/inference/gemini_robotics';
+import type { ArenaConfig } from '../src/brain/perception/vision_projector';
+import type { SelfPerceptionResult } from '../src/brain/perception/self_perception';
 import { SCENARIO_PRESETS } from '../src/shared/scenario_presets';
 
 dotenv.config();
@@ -75,7 +75,6 @@ let serveMode = false;
 let servePort = 8440;
 let collectTraces = true;
 let describeScene = false;
-let useSceneGraphPolicy = process.env.RF_POLICY !== 'legacy_motor';
 let scenarioId: string | undefined;
 
 const args = process.argv.slice(2);
@@ -112,10 +111,7 @@ for (let i = 0; i < args.length; i++) {
       describeScene = true;
       break;
     case '--scene-graph':
-      useSceneGraphPolicy = true; // Now the default — kept for backwards compat
-      break;
-    case '--legacy-motor':
-      useSceneGraphPolicy = false; // Opt out of SceneGraphPolicy, use VLMMotorPolicy
+      // SceneGraphPolicy is always active — flag kept for backwards compat
       break;
     case '--scenario':
       scenarioId = args[++i] || '';
@@ -135,8 +131,7 @@ Options:
   --serve-port <port>   Port for the HTTP tool server (default: 8440)
   --no-traces           Disable trace file collection
   --describe-scene      Ask VLM to describe camera scenes as text (gap analysis)
-  --scene-graph         Use SceneGraphPolicy (default — kept for backwards compat)
-  --legacy-motor        Use VLMMotorPolicy instead of SceneGraphPolicy
+  --scene-graph         SceneGraphPolicy is always active (backwards compat flag)
   --help                Show this help message
 
 Scenarios:
@@ -207,7 +202,7 @@ async function main(): Promise<void> {
   // 3. Inference (Ollama, Gemini, OpenRouter, or local)
   let infer;
   if (useOllama) {
-    const { OllamaInference } = await import('../src/2_qwen_cerebellum/ollama_inference');
+    const { OllamaInference } = await import('../src/brain/inference/ollama_inference');
     const ollama = new OllamaInference({
       model: ollamaModelName,
       temperature: 0.1,
@@ -246,7 +241,7 @@ async function main(): Promise<void> {
   //    Without this, STOP-before-inference cancels all movement between frames.
   const cameraUrl = `http://${config.cameraHost}:${config.cameraPort}${config.cameraPath}`;
   const visionLoop = new VisionLoop(
-    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize, useToolCallingPrompt: useGemini, coastDuringInference: true },
+    { cameraUrl, targetFPS: 2, frameHistorySize: config.frameHistorySize },
     compiler,
     transmitter,
     infer,
@@ -383,21 +378,14 @@ async function main(): Promise<void> {
     logger.info('Sim3D', 'Shadow Perception Loop enabled (RF_PERCEPTION_SHADOW=1)');
   }
 
-  // 6d. Reflex Guard — auto-enabled with SceneGraphPolicy (active enforcement)
-  //     Also enabled via RF_REFLEX_ENABLED or RF_PERCEPTION_SHADOW env vars.
-  //     Set RF_REFLEX_ENABLED=disabled to force off.
-  let reflexGuard: ReflexGuard | undefined;
-  if (useSceneGraphPolicy || process.env.RF_REFLEX_ENABLED || process.env.RF_PERCEPTION_SHADOW === '1') {
-    sceneGraph = sceneGraph ?? new SceneGraph();
-    const reflexMode = useSceneGraphPolicy ? 'active' as const : 'shadow' as const;
-    reflexGuard = new ReflexGuard(sceneGraph, { mode: reflexMode });
-    const detach = attachReflexGuard(transmitter, reflexGuard);
-    logger.info('Sim3D', `Reflex Guard attached (mode: ${reflexMode})`);
-  }
+  // 6d. Reflex Guard — always active (collision veto before motor commands)
+  sceneGraph = sceneGraph ?? new SceneGraph();
+  const reflexGuard = new ReflexGuard(sceneGraph, { mode: 'active' });
+  const detach = attachReflexGuard(transmitter, reflexGuard);
+  logger.info('Sim3D', 'Reflex Guard attached (mode: active)');
 
-  // 6e. Scene Graph Policy (PR-3) — replaces VLM motor policy
-  if (useSceneGraphPolicy && useGemini) {
-    sceneGraph = sceneGraph ?? new SceneGraph();
+  // 6e. Scene Graph Policy — perception-driven motor control
+  if (useGemini) {
     const googleApiKey = process.env.GOOGLE_API_KEY!;
     const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
     const perceptionInfer = createPerceptionInference({
@@ -410,9 +398,8 @@ async function main(): Promise<void> {
     );
     visionLoop.setPolicy(sgPolicy);
     logger.info('Sim3D', `SceneGraphPolicy active (model: ${geminiModel})`);
-  } else if (useSceneGraphPolicy && !useGemini) {
-    logger.warn('Sim3D', 'SceneGraphPolicy (default) requires --gemini — falling back to VLMMotorPolicy. Use --legacy-motor to suppress this warning.');
-    useSceneGraphPolicy = false;
+  } else {
+    logger.warn('Sim3D', 'SceneGraphPolicy requires --gemini — no policy set without it.');
   }
 
   // 6. Build ToolContext and dispatch via handleTool
