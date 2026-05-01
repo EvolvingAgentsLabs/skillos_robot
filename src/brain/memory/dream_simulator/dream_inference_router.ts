@@ -65,7 +65,7 @@ export class DreamInferenceRouter {
 
     if (this.activeMode === 'ollama') {
       // Lazy-import to avoid requiring ollama_inference when using gemini
-      const { OllamaInference } = require('../../2_qwen_cerebellum/ollama_inference');
+      const { OllamaInference } = require('../../inference/ollama_inference');
       const ollama = new OllamaInference({
         baseUrl: config.ollamaUrl,
         model: config.ollamaModel ?? 'roclaw-nav:q8_0',

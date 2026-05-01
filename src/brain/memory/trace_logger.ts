@@ -2,9 +2,9 @@
  * RoClaw Trace Logger — Records physical experiences to markdown
  *
  * Extends the core HierarchicalTraceLogger with RoClaw-specific formatting:
- * - Uses "VLM Reasoning" and "Compiled Bytecode" field names
+ * - Uses YAML frontmatter + markdown body (v2 schema)
  * - Supports appendBytecode() for Buffer-based bytecode logging
- * - Legacy v1 format support via appendTraceLegacy()
+ * - Schema validation on write
  */
 
 import * as fs from 'fs';
@@ -30,31 +30,52 @@ const TRACES_DIR = path.join(__dirname, 'traces');
 export type { StartTraceOptions } from '../../llmunix-core/trace_logger';
 
 // =============================================================================
-// Legacy v1 API (backward-compatible)
+// Trace Schema Validation (Phase 4c)
 // =============================================================================
 
-export function appendTrace(goal: string, vlmOutput: string, bytecode: Buffer): void {
-  const date = new Date().toISOString().split('T')[0];
-  const tracePath = path.join(TRACES_DIR, `trace_${date}.md`);
+export interface TraceSchema {
+  timestamp: string;    // ISO 8601
+  goal: string;         // Non-empty
+  outcome: string;      // 'success' | 'failure' | 'unknown' | 'timeout'
+  source: string;       // 'real_world' | 'sim_3d' | 'sim_2d' | 'dream_text'
+  fidelity: number;     // 0.0–1.0
+  frames: number;       // >= 0
+  duration_ms: number;  // >= 0
+}
 
-  const entry = `
-### Time: ${new Date().toISOString()}
-**Goal:** ${goal}
-**VLM Reasoning:** ${vlmOutput.trim()}
-**Compiled Bytecode:** \`${formatHex(bytecode)}\`
-**Source:** ${TraceSource.REAL_WORLD}
----
-`;
+const VALID_OUTCOMES = ['success', 'failure', 'unknown', 'timeout', 'partial', 'aborted'];
+const VALID_SOURCES = ['real_world', 'sim_3d', 'sim_2d', 'dream_text', 'dream_sim'];
 
-  if (!fs.existsSync(TRACES_DIR)) {
-    fs.mkdirSync(TRACES_DIR, { recursive: true });
+/**
+ * Validate a trace's frontmatter against the v2 schema.
+ * Returns an array of validation errors (empty = valid).
+ */
+export function validateTraceSchema(meta: Partial<TraceSchema>): string[] {
+  const errors: string[] = [];
+
+  if (!meta.timestamp || !/^\d{4}-\d{2}-\d{2}T/.test(meta.timestamp)) {
+    errors.push('timestamp must be ISO 8601 format');
+  }
+  if (!meta.goal || meta.goal.trim().length === 0) {
+    errors.push('goal must be non-empty');
+  }
+  if (!meta.outcome || !VALID_OUTCOMES.includes(meta.outcome)) {
+    errors.push(`outcome must be one of: ${VALID_OUTCOMES.join(', ')}`);
+  }
+  if (!meta.source || !VALID_SOURCES.includes(meta.source)) {
+    errors.push(`source must be one of: ${VALID_SOURCES.join(', ')}`);
+  }
+  if (meta.fidelity === undefined || meta.fidelity < 0 || meta.fidelity > 1) {
+    errors.push('fidelity must be a number between 0.0 and 1.0');
+  }
+  if (meta.frames === undefined || meta.frames < 0) {
+    errors.push('frames must be a non-negative integer');
+  }
+  if (meta.duration_ms === undefined || meta.duration_ms < 0) {
+    errors.push('duration_ms must be a non-negative integer');
   }
 
-  if (!fs.existsSync(tracePath)) {
-    fs.writeFileSync(tracePath, `# Execution Traces: ${date}\n\n`);
-  }
-
-  fs.appendFileSync(tracePath, entry);
+  return errors;
 }
 
 // =============================================================================
@@ -84,8 +105,7 @@ export class HierarchicalTraceLogger extends CoreTraceLogger {
   appendBytecode(traceId: string, vlmOutput: string, bytecode: Buffer): void {
     const entry = this.activeTraces.get(traceId);
     if (!entry) {
-      logger.warn('TraceLogger', `appendBytecode: unknown trace ${traceId}, falling back to legacy`);
-      appendTrace('(unknown trace)', vlmOutput, bytecode);
+      logger.warn('TraceLogger', `appendBytecode: unknown trace ${traceId} — action dropped`);
       return;
     }
     this.appendAction(traceId, vlmOutput, formatHex(bytecode));
@@ -111,73 +131,102 @@ export class HierarchicalTraceLogger extends CoreTraceLogger {
     };
   }
 
-  appendTraceLegacy(goal: string, vlmOutput: string, bytecode: Buffer): void {
-    appendTrace(goal, vlmOutput, bytecode);
-  }
-
   // ---------------------------------------------------------------------------
-  // Override writeTrace for RoClaw-specific field names
+  // Override writeTrace — v2 schema: YAML frontmatter + markdown body
   // ---------------------------------------------------------------------------
 
   protected writeTrace(entry: HierarchicalTraceEntry): void {
-    const date = entry.timestamp.split('T')[0];
-    const tracePath = path.join(this.tracesDir, `trace_${date}.md`);
-
     if (!fs.existsSync(this.tracesDir)) {
       fs.mkdirSync(this.tracesDir, { recursive: true });
     }
 
-    if (!fs.existsSync(tracePath)) {
-      fs.writeFileSync(tracePath, `# Execution Traces: ${date}\n\n`);
+    const source = entry.source && entry.source !== TraceSource.UNKNOWN_SOURCE
+      ? entry.source
+      : TraceSource.REAL_WORLD;
+    const fidelity = source === TraceSource.REAL_WORLD ? 1.0
+      : source === TraceSource.SIM_3D ? 0.8
+      : source === TraceSource.SIM_2D ? 0.5
+      : 0.3;
+    const confidence = entry.confidence ?? (entry.outcome === TraceOutcome.SUCCESS ? 0.8 : 0.3);
+    const outcome = (entry.outcome ?? 'unknown').toLowerCase();
+    const durationMs = entry.durationMs ?? 0;
+    const frames = entry.actionEntries.length;
+
+    // Lowercase source for YAML (convention: real_world, sim_3d, etc.)
+    const sourceLower = source.toLowerCase();
+
+    // Schema validation
+    const errors = validateTraceSchema({
+      timestamp: entry.timestamp,
+      goal: entry.goal,
+      outcome,
+      source: sourceLower,
+      fidelity,
+      frames,
+      duration_ms: durationMs,
+    });
+    if (errors.length > 0) {
+      logger.warn('TraceLogger', `Schema validation warnings: ${errors.join('; ')}`);
     }
 
+    // Generate unique filename per trace (not grouped by date)
+    const goalSlug = entry.goal
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 40);
+    const dateStr = entry.timestamp.split('T')[0];
+    const timeStr = entry.timestamp.split('T')[1]?.split('.')[0]?.replace(/:/g, '-') ?? '00-00-00';
+    const filename = `${dateStr}_${timeStr}_${goalSlug}.md`;
+    const tracePath = path.join(this.tracesDir, filename);
+
+    // Build YAML frontmatter + markdown body
     const lines: string[] = [
-      '',
-      `### Time: ${entry.timestamp}`,
-      `**Trace ID:** ${entry.traceId}`,
-      `**Level:** ${entry.hierarchyLevel}`,
+      '---',
+      `timestamp: "${entry.timestamp}"`,
+      `goal: "${entry.goal.replace(/"/g, '\\"')}"`,
+      `outcome: ${outcome}`,
+      `source: ${sourceLower}`,
+      `fidelity: ${fidelity}`,
+      `confidence: ${confidence}`,
+      `frames: ${frames}`,
+      `duration_ms: ${durationMs}`,
+      `level: ${entry.hierarchyLevel}`,
+      `trace_id: "${entry.traceId}"`,
     ];
 
-    if (entry.parentTraceId) {
-      lines.push(`**Parent:** ${entry.parentTraceId}`);
-    }
-
-    lines.push(`**Goal:** ${entry.goal}`);
-
-    if (entry.locationNode) {
-      lines.push(`**Location:** ${entry.locationNode}`);
-    }
-    if (entry.sceneDescription) {
-      lines.push(`**Scene:** ${entry.sceneDescription}`);
-    }
-    if (entry.activeStrategyId) {
-      lines.push(`**Strategy:** ${entry.activeStrategyId}`);
-    }
-    if (entry.source && entry.source !== TraceSource.UNKNOWN_SOURCE) {
-      lines.push(`**Source:** ${entry.source}`);
-    }
-
-    lines.push(`**Outcome:** ${entry.outcome}`);
-
-    if (entry.outcomeReason) {
-      lines.push(`**Reason:** ${entry.outcomeReason}`);
-    }
-    if (entry.durationMs !== null) {
-      lines.push(`**Duration:** ${entry.durationMs}ms`);
-    }
-    if (entry.confidence !== null) {
-      lines.push(`**Confidence:** ${entry.confidence}`);
-    }
-
-    for (const action of entry.actionEntries) {
-      lines.push(`**VLM Reasoning:** ${action.reasoning}`);
-      lines.push(`**Compiled Bytecode:** \`${action.actionPayload}\``);
-    }
+    if (entry.parentTraceId) lines.push(`parent_trace_id: "${entry.parentTraceId}"`);
+    if (entry.outcomeReason) lines.push(`outcome_reason: "${entry.outcomeReason.replace(/"/g, '\\"')}"`);
+    if (entry.locationNode) lines.push(`location: "${entry.locationNode}"`);
+    if (entry.activeStrategyId) lines.push(`strategy: "${entry.activeStrategyId}"`);
 
     lines.push('---');
     lines.push('');
+    lines.push(`# Trace: ${entry.goal}`);
+    lines.push('');
 
-    fs.appendFileSync(tracePath, lines.join('\n'));
+    if (entry.sceneDescription) {
+      lines.push(`**Scene:** ${entry.sceneDescription}`);
+      lines.push('');
+    }
+
+    lines.push('## Actions');
+    lines.push('');
+    lines.push('| Time | VLM Reasoning | Bytecode |');
+    lines.push('|------|---------------|----------|');
+
+    for (const action of entry.actionEntries) {
+      const time = action.timestamp.split('T')[1]?.split('.')[0] ?? '';
+      const reasoning = action.reasoning.replace(/\|/g, '\\|').slice(0, 80);
+      const payload = action.actionPayload.replace(/\|/g, '\\|');
+      lines.push(`| ${time} | ${reasoning} | \`${payload}\` |`);
+    }
+
+    lines.push('');
+    lines.push('---');
+
+    fs.writeFileSync(tracePath, lines.join('\n'));
+    logger.info('TraceLogger', `Trace written: ${filename} (${frames} actions, outcome=${outcome})`);
   }
 }
 

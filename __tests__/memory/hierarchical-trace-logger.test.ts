@@ -104,7 +104,7 @@ describe('HierarchicalTraceLogger', () => {
   // endTrace
   // ---------------------------------------------------------------------------
 
-  it('should end a trace and write to disk', () => {
+  it('should end a trace and write YAML frontmatter to disk', () => {
     const id = traceLogger.startTrace(HierarchyLevel.GOAL, 'Explore environment');
     const bytecode = Buffer.from([0xAA, 0x01, 0x80, 0x80, 0x01, 0xFF]);
     traceLogger.appendBytecode(id, 'Moving forward', bytecode);
@@ -112,33 +112,41 @@ describe('HierarchicalTraceLogger', () => {
 
     expect(traceLogger.getActiveTraceCount()).toBe(0);
 
-    // Verify file was written
-    const files = fs.readdirSync(TEST_TRACES_DIR).filter(f => f.startsWith('trace_'));
+    // Verify file was written (new format: date_time_goal-slug.md)
+    const files = fs.readdirSync(TEST_TRACES_DIR).filter(f => f.endsWith('.md'));
     expect(files.length).toBeGreaterThan(0);
 
     const content = fs.readFileSync(path.join(TEST_TRACES_DIR, files[0]), 'utf-8');
-    expect(content).toContain('**Trace ID:**');
-    expect(content).toContain('**Level:** 1');
-    expect(content).toContain('**Goal:** Explore environment');
-    expect(content).toContain('**Outcome:** SUCCESS');
-    expect(content).toContain('**Reason:** Reached target');
-    expect(content).toContain('**Confidence:** 0.9');
+    // YAML frontmatter format
+    expect(content).toContain('---');
+    expect(content).toContain(`trace_id: "${id}"`);
+    expect(content).toContain('level: 1');
+    expect(content).toContain('goal: "Explore environment"');
+    expect(content).toContain('outcome: success');
+    expect(content).toContain('outcome_reason: "Reached target"');
+    expect(content).toContain('confidence: 0.9');
+    // Markdown table of actions
+    expect(content).toContain('## Actions');
     expect(content).toContain('AA 01 80 80 01 FF');
   });
 
-  it('should write v2 format with parent trace ID', () => {
+  it('should write with parent trace ID in frontmatter', () => {
     const parentId = traceLogger.startTrace(HierarchyLevel.GOAL, 'Main goal');
     traceLogger.endTrace(parentId, TraceOutcome.SUCCESS);
 
     const childId = traceLogger.startTrace(HierarchyLevel.STRATEGY, 'Sub goal', {
       parentTraceId: parentId,
     });
-    traceLogger.endTrace(childId, TraceOutcome.PARTIAL, 'Blocked by obstacle');
+    traceLogger.endTrace(childId, TraceOutcome.FAILURE, 'Blocked by obstacle');
 
-    const files = fs.readdirSync(TEST_TRACES_DIR).filter(f => f.startsWith('trace_'));
-    const content = fs.readFileSync(path.join(TEST_TRACES_DIR, files[0]), 'utf-8');
-    expect(content).toContain(`**Parent:** ${parentId}`);
-    expect(content).toContain('**Outcome:** PARTIAL');
+    const files = fs.readdirSync(TEST_TRACES_DIR).filter(f => f.endsWith('.md'));
+    // Find the child trace file (has "sub-goal" in filename)
+    const childFile = files.find(f => f.includes('sub-goal'));
+    expect(childFile).toBeDefined();
+
+    const content = fs.readFileSync(path.join(TEST_TRACES_DIR, childFile!), 'utf-8');
+    expect(content).toContain(`parent_trace_id: "${parentId}"`);
+    expect(content).toContain('outcome: failure');
   });
 
   it('should handle endTrace for unknown ID gracefully', () => {
@@ -146,7 +154,7 @@ describe('HierarchicalTraceLogger', () => {
     traceLogger.endTrace('tr_ghost', TraceOutcome.ABORTED);
   });
 
-  it('should record duration on endTrace', () => {
+  it('should record duration in frontmatter on endTrace', () => {
     const id = traceLogger.startTrace(HierarchyLevel.REACTIVE, 'Quick action');
 
     // Small delay to ensure non-zero duration
@@ -155,21 +163,20 @@ describe('HierarchicalTraceLogger', () => {
 
     traceLogger.endTrace(id, TraceOutcome.SUCCESS);
 
-    const files = fs.readdirSync(TEST_TRACES_DIR).filter(f => f.startsWith('trace_'));
+    const files = fs.readdirSync(TEST_TRACES_DIR).filter(f => f.endsWith('.md'));
     const content = fs.readFileSync(path.join(TEST_TRACES_DIR, files[0]), 'utf-8');
-    expect(content).toContain('**Duration:**');
+    expect(content).toContain('duration_ms:');
   });
 
   // ---------------------------------------------------------------------------
-  // appendTraceLegacy
+  // appendBytecode with unknown trace ID
   // ---------------------------------------------------------------------------
 
-  it('should write legacy v1 format via appendTraceLegacy without throwing', () => {
+  it('should warn but not throw when appending to unknown trace ID', () => {
     const bytecode = Buffer.from([0xAA, 0x07, 0x00, 0x00, 0x07, 0xFF]);
-    // Legacy writes to the module-level TRACES_DIR, not our test dir.
-    // This test just verifies the method exists and doesn't throw.
+    // Unknown trace ID — should log warning and drop the action, not throw
     expect(() => {
-      traceLogger.appendTraceLegacy('Stop safely', 'Obstacle detected', bytecode);
+      traceLogger.appendBytecode('nonexistent-trace-id', 'Obstacle detected', bytecode);
     }).not.toThrow();
   });
 

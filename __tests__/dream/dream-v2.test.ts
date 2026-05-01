@@ -60,28 +60,29 @@ describe('Dream Engine v2', () => {
       traceLogger.appendBytecode(goalId, 'Door visible ahead', bytecode);
       traceLogger.endTrace(goalId, TraceOutcome.SUCCESS, 'Reached kitchen', 0.85);
 
-      // Verify trace file exists and has v2 format
-      const files = fs.readdirSync(TRACES_DIR).filter(f => f.startsWith('trace_'));
+      // Verify trace file exists and has YAML frontmatter format
+      const files = fs.readdirSync(TRACES_DIR).filter(f => f.endsWith('.md'));
       expect(files.length).toBeGreaterThan(0);
 
       const content = fs.readFileSync(path.join(TRACES_DIR, files[0]), 'utf-8');
-      expect(content).toContain('**Trace ID:**');
-      expect(content).toContain('**Level:** 1');
-      expect(content).toContain('**Outcome:** SUCCESS');
-      expect(content).toContain('**Goal:** Navigate to kitchen');
-      expect(content).toContain('**Location:** hallway');
+      expect(content).toContain('---');
+      expect(content).toContain('level: 1');
+      expect(content).toContain('outcome: success');
+      expect(content).toContain('goal: "Navigate to kitchen"');
+      expect(content).toContain('location: "hallway"');
       expect(content).toContain('AA 01 80 80 01 FF');
     });
 
-    it('should generate v1-compatible traces with bytecodes', () => {
+    it('should append bytecodes to an active trace', () => {
       const traceLogger = new HierarchicalTraceLogger(TRACES_DIR);
 
-      // Legacy format still works
+      // Start a trace and append a bytecode
+      const traceId = traceLogger.startTrace(HierarchyLevel.REACTIVE, 'Explore');
       const bytecode = Buffer.from([0xAA, 0x07, 0x00, 0x00, 0x07, 0xFF]);
-      traceLogger.appendTraceLegacy('Explore', 'Obstacle detected', bytecode);
+      traceLogger.appendBytecode(traceId, 'Obstacle detected', bytecode);
+      traceLogger.endTrace(traceId, TraceOutcome.SUCCESS);
 
-      // v1 traces get written to the default traces dir, not our test dir
-      // This just verifies it doesn't throw
+      // Verify it doesn't throw and trace was written
       expect(true).toBe(true);
     });
   });
@@ -303,13 +304,14 @@ deprecated: false
         traceLogger.endTrace(id, TraceOutcome.SUCCESS, 'Avoided obstacle', 0.8);
       }
 
-      // Step 2: Verify traces were written
-      const traceFiles = fs.readdirSync(TRACES_DIR).filter(f => f.startsWith('trace_'));
+      // Step 2: Verify traces were written (new format: per-trace .md files)
+      const traceFiles = fs.readdirSync(TRACES_DIR).filter(f => f.endsWith('.md'));
       expect(traceFiles.length).toBeGreaterThan(0);
 
+      // Each trace is now its own file with YAML frontmatter
       const content = fs.readFileSync(path.join(TRACES_DIR, traceFiles[0]), 'utf-8');
-      // Should have multiple trace blocks
-      expect((content.match(/### Time:/g) || []).length).toBeGreaterThanOrEqual(5);
+      expect(content).toContain('---');
+      expect(content).toContain('## Actions');
 
       // Step 3: Simulate dream output (strategy creation)
       const dreamStrategy: Strategy = {

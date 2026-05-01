@@ -19,7 +19,7 @@ import * as http from 'http';
 import { logger } from '../../shared/logger';
 import { BytecodeCompiler, Opcode, encodeFrame, decodeFrame, formatHex } from '../../control/bytecode_compiler';
 import { UDPTransmitter } from '../../bridge/udp_transmitter';
-import { appendTrace, traceLogger } from '../memory/trace_logger';
+import { traceLogger } from '../memory/trace_logger';
 import { HierarchyLevel, TraceOutcome, TraceSource } from '../memory/trace_types';
 import type { InferenceFunction } from '../../llmunix-core/interfaces';
 import type { PerceptionPolicy, TelemetrySnapshot } from './perception_policy';
@@ -801,7 +801,14 @@ export class VisionLoop extends EventEmitter {
             this.reactiveTraceId = null;
           }
         } else {
-          appendTrace(this.currentGoal, vlmOutput, bytecode);
+          // No active trace — start an ad-hoc one so we still log
+          const adHocId = traceLogger.startTrace(
+            HierarchyLevel.REACTIVE,
+            this.currentGoal || '(no goal)',
+            { source: TraceSource.REAL_WORLD },
+          );
+          traceLogger.appendBytecode(adHocId, vlmOutput, bytecode);
+          traceLogger.endTrace(adHocId, TraceOutcome.UNKNOWN, 'Single frame (no active trace)');
         }
 
         // Stuck detection: low entropy over recent opcode window (catches identical + oscillation)
