@@ -31,6 +31,8 @@ import {
   type GuardDecision,
   type ReflexMode,
 } from './reflex_guard';
+import { EgocentricController, type EgocentricPerception, type EgoDecision } from './egocentric_controller';
+import { EgocentricReflexGuard, type EgoGuardDecision } from './egocentric_reflex_guard';
 import type { UDPTransmitter } from '../bridge/udp_transmitter';
 import { encodeFrame, Opcode } from './bytecode_compiler';
 
@@ -47,6 +49,14 @@ export interface ReactiveLoopConfig {
   stuckProgressCm?: number;
   /** ReflexGuard mode override. Default reads from env. */
   reflexMode?: ReflexMode;
+}
+
+/** Config for egocentric mode ReactiveLoop. */
+export interface EgocentricReactiveLoopConfig {
+  /** Tick interval in ms. Default 50 (20 Hz). */
+  intervalMs?: number;
+  /** Number of ticks of 'search' to trigger 'stuck'. Default 40. */
+  stuckThresholdTicks?: number;
 }
 
 export interface ReactiveCommandEvent {
@@ -275,6 +285,146 @@ export class ReactiveLoop extends EventEmitter {
         // Reset window to avoid repeated stuck emissions
         this.distanceHistory = [];
       }
+    }
+  }
+}
+
+// =============================================================================
+// EgocentricReactiveLoop — First-person camera control at 20 Hz
+// =============================================================================
+
+/**
+ * High-frequency motor loop for egocentric visual servoing.
+ * Re-uses the last EgocentricPerception from SemanticLoop to drive
+ * the EgocentricController at 20 Hz.
+ */
+export class EgocentricReactiveLoop extends EventEmitter {
+  private readonly controller: EgocentricController;
+  private readonly guard: EgocentricReflexGuard;
+  private readonly transmitter: UDPTransmitter;
+  private readonly getPerception: () => EgocentricPerception;
+  private readonly intervalMs: number;
+  private readonly stuckThresholdTicks: number;
+
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private running = false;
+  private tickCount = 0;
+  private searchTicks = 0;
+
+  private stats = {
+    ticks: 0,
+    commandsSent: 0,
+    vetoes: 0,
+    arrivals: 0,
+    stuckEvents: 0,
+  };
+
+  constructor(
+    controller: EgocentricController,
+    guard: EgocentricReflexGuard,
+    transmitter: UDPTransmitter,
+    getPerception: () => EgocentricPerception,
+    config: EgocentricReactiveLoopConfig = {},
+  ) {
+    super();
+    this.controller = controller;
+    this.guard = guard;
+    this.transmitter = transmitter;
+    this.getPerception = getPerception;
+    this.intervalMs = config.intervalMs ?? 50;
+    this.stuckThresholdTicks = config.stuckThresholdTicks ?? 40;
+  }
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.tickCount = 0;
+    this.searchTicks = 0;
+
+    logger.info('EgoReactiveLoop', `Started — ${this.intervalMs}ms interval (${Math.round(1000 / this.intervalMs)} Hz)`);
+
+    this.timer = setInterval(() => {
+      this.tick();
+    }, this.intervalMs);
+  }
+
+  stop(): void {
+    if (!this.running) return;
+    this.running = false;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    const stopFrame = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+    this.transmitter.send(stopFrame).catch(() => {});
+    logger.info('EgoReactiveLoop', 'Stopped');
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  getStats(): ReactiveLoopStats {
+    return { ...this.stats, running: this.running };
+  }
+
+  getTickCount(): number {
+    return this.tickCount;
+  }
+
+  private tick(): void {
+    this.tickCount++;
+    this.stats.ticks++;
+
+    const perception = this.getPerception();
+
+    // Update guard with latest obstacles
+    this.guard.updateObstacles(perception.obstacles);
+
+    // Controller decision
+    const decision = this.controller.decide(perception);
+
+    // Guard check
+    const guardResult = this.guard.decide(decision.frame);
+    const frameToSend = guardResult.allow
+      ? decision.frame
+      : (guardResult.replacement ?? decision.frame);
+    const sent = guardResult.allow;
+
+    // Transmit
+    this.transmitter.send(frameToSend).catch((err) => {
+      logger.warn('EgoReactiveLoop', 'Send failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    if (sent) {
+      this.stats.commandsSent++;
+    } else {
+      this.stats.vetoes++;
+    }
+
+    // Emit command event
+    this.emit('command', { decision, guard: guardResult, sent, tick: this.tickCount });
+
+    // Check arrival
+    if (decision.action === 'arrived') {
+      this.stats.arrivals++;
+      this.emit('arrived', decision);
+      this.stop();
+      return;
+    }
+
+    // Stuck detection: prolonged search means target is lost
+    if (decision.action === 'search') {
+      this.searchTicks++;
+      if (this.searchTicks >= this.stuckThresholdTicks) {
+        this.stats.stuckEvents++;
+        this.emit('stuck', { action: 'search', ticks: this.tickCount });
+        this.searchTicks = 0;
+      }
+    } else {
+      this.searchTicks = 0;
     }
   }
 }

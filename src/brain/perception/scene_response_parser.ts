@@ -120,6 +120,11 @@ export function parseGeminiSceneResponse(text: string): GeminiObject[] {
       }
     }
 
+    // is_target is optional (first-person egocentric mode)
+    if (typeof o.is_target === 'boolean') {
+      result.is_target = o.is_target;
+    }
+
     results.push(result);
   }
 

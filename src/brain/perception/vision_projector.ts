@@ -86,6 +86,11 @@ export interface GeminiObject {
    * (Spartun3D situated scene graph — passby objects.)
    */
   passby_objects?: string[];
+  /**
+   * Whether this object is the navigation target.
+   * Used in first-person egocentric mode to identify the goal object.
+   */
+  is_target?: boolean;
 }
 
 /** Pure-math projection result (no SceneGraph mutation). */
