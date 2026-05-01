@@ -1,4 +1,6 @@
 /**
+ * DEPRECATED — Use firmware/roclaw_unified/ (single-board V2 design).
+ *
  * RoClaw Spinal Cord — ESP32-S3 Bytecode-Only Motor Controller
  *
  * Controls 2x 28BYJ-48 stepper motors via ULN2003 drivers over WiFi UDP.

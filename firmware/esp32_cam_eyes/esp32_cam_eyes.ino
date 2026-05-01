@@ -1,4 +1,6 @@
 /**
+ * DEPRECATED — Use firmware/roclaw_unified/ (single-board V2 design).
+ *
  * RoClaw Eyes — ESP32-CAM MJPEG WiFi Streamer
  *
  * Streams MJPEG video over HTTP for host PC VLM inference.
