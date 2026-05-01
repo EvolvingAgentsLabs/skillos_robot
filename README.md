@@ -50,18 +50,23 @@ open http://localhost:8000?bridge=ws://localhost:9090
 ### Prerequisites for hardware
 
 ```bash
-# Flash 4_somatic_firmware/ to your ESP32-S3
+# Flash firmware/roclaw_unified/ to your ESP32-S3-CAM
+# (requires PlatformIO: pio run -t upload)
 echo "ROBOT_IP=192.168.1.42" > .env
 robot test
 ```
 
 ## How it works
 
-A vision language model sees through the robot's camera and emits motor commands as 8-byte UDP frames to the ESP32-S3. Every run produces a markdown trace. Failed traces get retried in MuJoCo simulation during dream consolidation and fed back as training data.
+Two decoupled loops run concurrently:
+- **Semantic loop** (1–2 Hz) — a VLM perceives the scene and updates a shared SceneGraph
+- **Reactive loop** (10–20 Hz) — a deterministic controller reads the SceneGraph and emits 6-byte motor commands over UDP to the ESP32-S3
+
+Every run produces a YAML-frontmatter markdown trace. Failed traces get retried in MuJoCo simulation during dream consolidation and fed back as training data.
 
 Two inference backends:
 - **Gemini** — cloud teacher. Collects traces + benchmarks. Default.
-- **Ollama** — local student. Qwen3-VL-2B via Ollama. No internet.
+- **Ollama** — local student. Qwen3-VL via Ollama. No internet. Use `--local` flag.
 
 ## Architecture
 
