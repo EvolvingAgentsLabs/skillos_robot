@@ -8,7 +8,9 @@
 // so an upstream caller can develop against the wire protocol while the
 // real wiring lands incrementally.
 
-import { ERR, makeError, type CartridgeResult } from './protocol';
+import { ERR, makeError, makeResult, type CartridgeResult } from './protocol';
+import { getRobotState } from './state';
+import { Opcode, encodeFrame } from '../control/bytecode_compiler';
 
 export interface MethodContext {
   /** Send a progress event to the caller. */
@@ -68,12 +70,24 @@ const describe: MethodImpl = async (_args, _ctx, reqId) => {
 };
 
 // ── stop ──────────────────────────────────────────────────────────
-// TODO: emit STOP (opcode 0x07) via the UDP transmitter. This bypasses
-// the reactive loop's normal cadence and goes straight to the wire.
+// Emits STOP (opcode 0x07) directly over UDP. Bypasses the 20Hz reactive
+// loop — the ESP32 firmware safety layer guarantees the motors halt
+// within one tick (~50ms). Idempotent: sending STOP when already stopped
+// is harmless.
 const stop: MethodImpl = async (_args, _ctx, reqId) => {
-  // TODO: udpTransmitter.sendStop();
-  return makeError(reqId, ERR.NOT_IMPLEMENTED,
-    'stop is scaffolded — wire to bridge/udp_transmitter.ts (sendStop helper)');
+  const { transmitter } = getRobotState();
+  if (!transmitter) {
+    return makeError(reqId, ERR.HARDWARE_UNAVAILABLE,
+      'UDP transmitter not configured. Start adapter with --robot-host <ip> [--robot-port <n>].');
+  }
+  try {
+    const frame = encodeFrame({ opcode: Opcode.STOP, paramLeft: 0, paramRight: 0 });
+    await transmitter.send(frame);
+    return makeResult(reqId, { stopped: true, opcode: 'STOP', frame_bytes: frame.length });
+  } catch (err) {
+    return makeError(reqId, ERR.HARDWARE_UNAVAILABLE,
+      `STOP transmit failed: ${(err as Error).message}`);
+  }
 };
 
 // ── set_speed ─────────────────────────────────────────────────────
