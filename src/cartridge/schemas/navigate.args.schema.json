@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["goal"],
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "description": "NL goal ('the red cube'), or coordinate literal '{x: 100, y: 50}'"
+    },
+    "timeout_s": {
+      "type": "number",
+      "default": 60,
+      "minimum": 1,
+      "maximum": 600
+    },
+    "policy": {
+      "enum": ["safe", "fast"],
+      "default": "safe"
+    }
+  }
+}

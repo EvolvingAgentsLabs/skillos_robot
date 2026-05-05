@@ -1,0 +1,56 @@
+{
+  "name": "robot",
+  "version": "0.1.0",
+  "description": "skillos_robot exposed as an llm_os cartridge. High-level navigation, perception, and motor control. The 20Hz reactive loop, reflex guard, and ESP32 firmware stay onboard; this cartridge is the strategic-layer surface that an upstream OS (skillos_mini, llm_os) calls into.",
+  "preferred_tier": "local",
+  "transport": {
+    "protocol": "websocket",
+    "default_url": "ws://localhost:7424/cartridge"
+  },
+  "methods": {
+    "navigate": {
+      "summary": "Move the robot to a goal expressed in natural language or coordinates.",
+      "args_schema": "schemas/navigate.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.navigate {\"goal\":\"red cube\"}<|/call|>\n",
+        "<|call|>robot.navigate {\"goal\":\"doorway\"}<|/call|>\n",
+        "<|call|>robot.navigate {\"goal\":\"home\"}<|/call|>\n"
+      ]
+    },
+    "observe": {
+      "summary": "Return current SceneGraph snapshot (objects, positions, distances).",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.observe {}<|/call|>\n"
+      ]
+    },
+    "describe": {
+      "summary": "Return a natural-language description of the current view.",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.describe {}<|/call|>\n"
+      ]
+    },
+    "stop": {
+      "summary": "Emergency stop. Robot halts within reflex-guard latency (<50ms).",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.stop {}<|/call|>\n"
+      ]
+    },
+    "set_speed": {
+      "summary": "Cap motor speed (e.g., for tight environments).",
+      "args_schema": "schemas/set_speed.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.set_speed {\"max\":\"slow\"}<|/call|>\n",
+        "<|call|>robot.set_speed {\"max\":\"normal\"}<|/call|>\n",
+        "<|call|>robot.set_speed {\"max\":\"fast\"}<|/call|>\n"
+      ]
+    }
+  },
+  "halt": [
+    "<|halt|>status=success\n",
+    "<|halt|>status=failure\n",
+    "<|halt|>status=partial\n"
+  ]
+}

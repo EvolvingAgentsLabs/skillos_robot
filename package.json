@@ -17,7 +17,8 @@
     "sim:3d": "tsx src/mjswan_bridge.ts",
     "hardware:test": "tsx scripts/hardware_test.ts",
     "ab:test": "tsx scripts/ab_test_real.ts",
-    "dream:loop": "tsx scripts/dream_loop.ts"
+    "dream:loop": "tsx scripts/dream_loop.ts",
+    "cartridge": "tsx src/cartridge/cli.ts"
   },
   "keywords": [
     "robot",
