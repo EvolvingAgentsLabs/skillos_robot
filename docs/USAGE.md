@@ -11,42 +11,45 @@
 ## Prerequisites
 
 ```
-  ┌─────────────────────────────────────────────────────────┐
-  │  Node           ≥ 20.x         (tsx, ws, gl-matrix)     │
-  │  Python         ≥ 3.10         (mjswan bridge, MuJoCo)  │
-  │  Ollama         ≥ 0.5          (local Qwen3-VL)         │
-  │  Gemini key     optional       (GEMINI_API_KEY in .env) │
-  │  ESP32-S3       optional       (real hardware mode)     │
-  └─────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Node             ≥ 20.x         (tsx, ws, gl-matrix)       │
+  │  Python           ≥ 3.10         (mjswan bridge, MuJoCo)    │
+  │  OpenRouter key   recommended    (OPENROUTER_API_KEY)       │
+  │  Gemini key       optional       (GOOGLE_API_KEY, --gemini) │
+  │  Ollama           optional       (local offline, --ollama)  │
+  │  ESP32-S3         optional       (real hardware mode)       │
+  └──────────────────────────────────────────────────────────────┘
 ```
 
 ```bash
 git clone https://github.com/EvolvingAgentsLabs/skillos_robot.git
 cd skillos_robot
 npm install
-cp .env.example .env   # edit GEMINI_API_KEY + ROBOT_IP if you have them
+cp .env.example .env   # edit OPENROUTER_API_KEY + ROBOT_IP if you have them
 ```
 
 
 ## Modes at a glance
 
 ```
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │  MODE         INFERENCE          USE FOR                            │
-  ├─────────────────────────────────────────────────────────────────────┤
-  │  --gemini     cloud Gemini-ER    teacher · trace collection         │
-  │  --ollama     local Qwen3-VL     student · production · offline     │
-  │  --dream      dream simulator    overnight consolidation            │
-  │  --shadow     both, A/B          benchmarking before swapping       │
-  └─────────────────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  MODE         INFERENCE                USE FOR                       │
+  ├──────────────────────────────────────────────────────────────────────┤
+  │  (default)    cloud Qwen3-VL-8B        recommended · vision-capable  │
+  │  --gemini     cloud Gemini-ER          alternative · native tools    │
+  │  --ollama     local Qwen3-VL           offline · no images           │
+  │  --dream      dream simulator          overnight consolidation       │
+  │  --shadow     both, A/B                benchmarking before swapping  │
+  └──────────────────────────────────────────────────────────────────────┘
 ```
 
 | Flag | What runs | Latency | Cost |
 |---|---|---|---|
+| *(default)* | Qwen3-VL-8B via OpenRouter (cloud) | 1–3 s/frame | $0.08/M in, $0.50/M out |
 | `--gemini` | Gemini Robotics-ER 1.6 (cloud) | 1–2 s/frame | API metered |
-| `--ollama` | Qwen3-VL-2B GGUF (Ollama at `localhost:11434`) | ~200 ms/frame | free · local |
+| `--ollama` | Qwen3-VL GGUF (Ollama at `localhost:11434`) | ~200 ms/frame | free · local · no images |
 | `--dream` | Same VLM but on rendered MuJoCo frames | 200–400 ms/frame | free |
-| `--shadow` | Both, side-by-side · only Gemini decisions sent | sum of both | metered |
+| `--shadow` | Both, side-by-side · only primary decisions sent | sum of both | metered |
 
 
 ## Simulation
@@ -78,10 +81,13 @@ You should see:
 ### terminal 3 — drive the robot
 
 ```bash
-# Cloud teacher (best quality, requires GEMINI_API_KEY):
+# Default (OpenRouter Qwen3-VL-8B, requires OPENROUTER_API_KEY):
+npm run sim:3d -- --goal "navigate to the red cube"
+
+# Gemini alternative (requires GOOGLE_API_KEY):
 npm run sim:3d -- --gemini --goal "navigate to the red cube"
 
-# Local student (no internet):
+# Local offline (no internet, text-only — no image perception):
 npm run sim:3d -- --ollama --goal "navigate to the red cube"
 
 # A/B both at once for benchmarking:
@@ -92,7 +98,7 @@ You'll see a streaming log:
 
 ```
 [OK] cortex          ▸ planner ▸ "approach red object · safe distance"
-[OK] cerebellum      ▸ camera ▸ ollama ▸ qwen3-vl-2b
+[OK] cerebellum      ▸ camera ▸ openrouter ▸ qwen3-vl-8b
 [OK] vision_proj     ▸ box_2d → arena_xyz
 [OK] reactive_ctrl   ▸ bearing -8.4° · distance 128 cm
 ▸ sending bytecode  ▸ AA 4F 02 28 00 02 6B FF  (rotate_cw 8°)
@@ -141,11 +147,16 @@ This sends a sequence of `LED`, `MOVE_FORWARD(20)`, `STOP`, and
 ### live run
 
 ```bash
-# With overhead camera at 192.168.1.50:8080/video:
-npm run dev -- --ollama \
-                --camera external \
-                --camera-url http://192.168.1.50:8080/video \
-                --goal "find the kitchen doorway"
+# With overhead camera at 192.168.1.50:8080/video (uses OpenRouter by default):
+npm run dev -- --camera external \
+               --camera-url http://192.168.1.50:8080/video \
+               --goal "find the kitchen doorway"
+
+# Or with Gemini:
+npm run dev -- --gemini \
+               --camera external \
+               --camera-url http://192.168.1.50:8080/video \
+               --goal "find the kitchen doorway"
 ```
 
 
@@ -318,13 +329,13 @@ The ESP32 isn't responding within 80 ms. Check:
 
 ### "ollama returns garbage"
 
-The default `qwen3-vl:2b` model is **not** the fine-tuned student. You
-need either:
-- Run the dream loop overnight to produce a fine-tuned variant, or
-- Pull the latest community-distilled GGUF:
+Ollama mode does **not** support images — it's text-only. For full
+vision-based perception with the SceneGraph pipeline, use OpenRouter
+(the default) or Gemini (`--gemini`). If you must use Ollama, ensure
+you have a fine-tuned model:
 
 ```bash
-ollama pull evolvingagents/qwen3-vl-roclaw:2b
+ollama pull evolvingagents/qwen3-vl-roclaw:8b
 ```
 
 ### "ReflexGuard vetoes everything"
@@ -349,13 +360,13 @@ don't trigger vetoes.
   ┌─[ COMMANDS ]──────────────────────────────────────────────────────┐
   │                                                                    │
   │  npm run sim:3d -- --serve         start the simulation bridge    │
-  │  npm run sim:3d -- --gemini        cloud teacher                  │
-  │  npm run sim:3d -- --ollama        local student                  │
+  │  npm run sim:3d -- --goal "..."    default (OpenRouter Qwen3-VL)  │
+  │  npm run sim:3d -- --gemini        Gemini alternative             │
+  │  npm run sim:3d -- --ollama        local offline (no images)      │
   │  npm run sim:3d -- --shadow        A/B both                       │
   │  npm run hardware:test             smoke test on real ESP32       │
   │  npm run dream:loop                overnight consolidation        │
   │  npm run ab:test                   benchmark cognitive stack       │
-  │  npm run dream:v1                  legacy text-only dream         │
   │                                                                    │
   └────────────────────────────────────────────────────────────────────┘
 ```

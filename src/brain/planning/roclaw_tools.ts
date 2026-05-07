@@ -87,8 +87,8 @@ function ensureMapInfer(): InferenceFunction {
     } else {
       const cerebellum = new CerebellumInference({
         apiKey: process.env.OPENROUTER_API_KEY || '',
-        model: process.env.QWEN_MODEL || 'qwen/qwen-2.5-vl-72b-instruct',
-        maxTokens: 512,
+        model: process.env.QWEN_MODEL || 'qwen/qwen3-vl-8b-instruct',
+        maxTokens: 1024,
         timeoutMs: 30000,
         temperature: 0.3,
         ...(process.env.LOCAL_INFERENCE_URL ? { apiBaseUrl: process.env.LOCAL_INFERENCE_URL } : {}),

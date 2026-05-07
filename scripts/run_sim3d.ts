@@ -27,7 +27,7 @@ import { logger } from '../src/shared/logger';
 import { BytecodeCompiler, Opcode, encodeFrame, formatHex } from '../src/control/bytecode_compiler';
 import { UDPTransmitter } from '../src/bridge/udp_transmitter';
 import { VisionLoop } from '../src/brain/perception/vision_loop';
-import { CerebellumInference } from '../src/brain/inference/inference';
+import { CerebellumInference, createOpenRouterPerceptionInference } from '../src/brain/inference/inference';
 import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../src/brain/inference/gemini_robotics';
 import { handleTool, type ToolContext } from '../src/brain/planning/roclaw_tools';
 import { TraceSource, TraceOutcome } from '../src/llmunix-core/types';
@@ -59,7 +59,7 @@ const config = {
   cameraPath: process.env.ESP32_CAM_PATH || '/stream',
   frameHistorySize: parseInt(process.env.FRAME_HISTORY_SIZE || '4', 10),
   apiKey: process.env.OPENROUTER_API_KEY || '',
-  model: process.env.QWEN_MODEL || 'qwen/qwen-2.5-vl-72b-instruct',
+  model: process.env.QWEN_MODEL || 'qwen/qwen3-vl-8b-instruct',
   localInferenceUrl: process.env.LOCAL_INFERENCE_URL,
 };
 
@@ -130,10 +130,12 @@ Options:
   --explore             Explore the environment autonomously
   --constraints <text>  Additional constraints for navigation
   --scenario <id>       Load scenario preset (auto-sets goal if not provided)
-  --gemini              Use Gemini Robotics-ER instead of Qwen-VL (requires GOOGLE_API_KEY)
-  --ollama              Use Ollama with a fine-tuned local model
+  --gemini              Use Gemini Robotics-ER instead of OpenRouter (requires GOOGLE_API_KEY)
+  --ollama              Use Ollama with a fine-tuned local model (no vision support)
   --ollama-model <name> Ollama model name (default: roclaw-nav:q8_0)
   --egocentric          First-person visual servoing (camera-only, no IMU)
+
+Default backend: OpenRouter + Qwen3-VL-8B (set OPENROUTER_API_KEY in .env)
   --serve               Start HTTP tool server instead of running a single goal
   --serve-port <port>   Port for the HTTP tool server (default: 8440)
   --no-traces           Disable trace file collection
@@ -145,17 +147,13 @@ Scenarios:
   ${Object.entries(SCENARIO_PRESETS).map(([id, p]) => `${id.padEnd(18)} ${p.name}`).join('\n  ')}
 
 Examples:
-  npx tsx scripts/run_sim3d.ts --goal "navigate to the red box"
-  npx tsx scripts/run_sim3d.ts --explore
-  npx tsx scripts/run_sim3d.ts --gemini --scenario multi-room
-  npx tsx scripts/run_sim3d.ts --gemini --scenario scavenger
+  npx tsx scripts/run_sim3d.ts --goal "navigate to the red box"    # OpenRouter (default)
+  npx tsx scripts/run_sim3d.ts --explore                            # OpenRouter explore
+  npx tsx scripts/run_sim3d.ts --egocentric --goal "the red cube"  # OpenRouter egocentric
+  npx tsx scripts/run_sim3d.ts --gemini --scenario multi-room      # Gemini mode
   npx tsx scripts/run_sim3d.ts --goal "the door" --constraints "stay close to walls"
-  GOOGLE_API_KEY=... npx tsx scripts/run_sim3d.ts --gemini --goal "find the red cube"
-  npx tsx scripts/run_sim3d.ts --ollama --goal "find the red cube"  # Local fine-tuned model
-  npx tsx scripts/run_sim3d.ts --gemini --egocentric --goal "go to the red cube"  # Camera-only
-  npx tsx scripts/run_sim3d.ts --serve --gemini  # Tool server on :8440
-  # Collect traces with scene descriptions for gap analysis:
-  npx tsx scripts/run_sim3d.ts --gemini --describe-scene --goal "find the red cube"
+  npx tsx scripts/run_sim3d.ts --serve                             # Tool server on :8440
+  npx tsx scripts/run_sim3d.ts --describe-scene --goal "find the red cube"
 `);
       process.exit(0);
   }
@@ -395,7 +393,7 @@ async function main(): Promise<void> {
 
   // 6e. Scene Graph Policy / Egocentric Dual-Loop — perception-driven motor control
   if (useEgocentric && useGemini) {
-    // Egocentric mode: first-person visual servoing via dual-loop
+    // Egocentric mode with Gemini: first-person visual servoing via dual-loop
     const googleApiKey = process.env.GOOGLE_API_KEY!;
     const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
     const perceptionInfer = createPerceptionInference({
@@ -416,7 +414,7 @@ async function main(): Promise<void> {
     });
     logger.info('Sim3D', `Egocentric mode: first-person camera, no IMU (model: ${geminiModel})`);
   } else if (useGemini) {
-    // Overhead mode: SceneGraphPolicy (legacy)
+    // Overhead mode with Gemini: SceneGraphPolicy
     const googleApiKey = process.env.GOOGLE_API_KEY!;
     const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
     const perceptionInfer = createPerceptionInference({
@@ -429,8 +427,36 @@ async function main(): Promise<void> {
     );
     visionLoop.setPolicy(sgPolicy);
     logger.info('Sim3D', `SceneGraphPolicy active (model: ${geminiModel})`);
+  } else if (!useOllama && config.apiKey) {
+    // OpenRouter mode: SceneGraphPolicy with Qwen3-VL perception
+    const perceptionInfer = createOpenRouterPerceptionInference({
+      apiKey: config.apiKey,
+      model: config.model,
+    });
+    if (useEgocentric) {
+      const egoController = new EgocentricController();
+      const egoGuard = new EgocentricReflexGuard();
+      visionLoop.enableDualLoop({
+        graph: sceneGraph,
+        controller: new ReactiveController(),
+        guard: reflexGuard,
+        arena: ARENA,
+        perceptionInfer,
+        controlMode: 'egocentric',
+        egoController,
+        egoGuard,
+      });
+      logger.info('Sim3D', `Egocentric mode: OpenRouter (${config.model})`);
+    } else {
+      const controller = new ReactiveController();
+      const sgPolicy = new SceneGraphPolicy(
+        sceneGraph, controller, perceptionInfer, compiler, ARENA,
+      );
+      visionLoop.setPolicy(sgPolicy);
+      logger.info('Sim3D', `SceneGraphPolicy active (OpenRouter: ${config.model})`);
+    }
   } else {
-    logger.warn('Sim3D', 'SceneGraphPolicy requires --gemini — no policy set without it.');
+    logger.warn('Sim3D', 'SceneGraphPolicy requires --gemini or OPENROUTER_API_KEY — no policy set.');
   }
 
   // 6. Build ToolContext and dispatch via handleTool

@@ -16,13 +16,14 @@ doorway. Same recipe scales to any scene.
 Make sure simulation runs at all first:
 
 ```bash
-cd RoClaw
+cd skillos_robot
 npm install
 npm run sim:3d -- --serve &       # background bridge
-npm run sim:3d -- --gemini --goal "navigate to the red cube"
+npm run sim:3d -- --goal "navigate to the red cube"  # uses OpenRouter by default
 ```
 
-If that works, you're ready.
+If that works, you're ready. (Requires `OPENROUTER_API_KEY` in `.env`.
+Alternatively, use `--gemini` with `GOOGLE_API_KEY`.)
 
 
 ## Scaffold the project
@@ -193,9 +194,8 @@ The runtime auto-discovers `projects/<name>/`. Tell it which one to use:
 # In one terminal:
 npm run sim:3d -- --serve --arena=projects/my-arena/arena.json
 
-# In another:
-npm run sim:3d -- --ollama \
-                  --project=projects/my-arena \
+# In another (uses OpenRouter Qwen3-VL-8B by default):
+npm run sim:3d -- --project=projects/my-arena \
                   --goal "find the kitchen"
 ```
 
@@ -220,7 +220,7 @@ You should see in the log:
 ### success path
 
 ```bash
-npm run sim:3d -- --ollama --project=projects/my-arena \
+npm run sim:3d -- --project=projects/my-arena \
                   --goal "find the kitchen"
 ```
 
@@ -241,7 +241,7 @@ strategy file:
 
 ```bash
 mv projects/my-arena/strategies/plan_around_desk.md{,.disabled}
-npm run sim:3d -- --ollama --project=projects/my-arena \
+npm run sim:3d -- --project=projects/my-arena \
                   --goal "find the kitchen"
 mv projects/my-arena/strategies/plan_around_desk.md{.disabled,}
 ```
@@ -353,8 +353,8 @@ warehouse, outdoors-with-curbs, …) lands the same way: arena JSON +
 scene priors + a strategy + an optional reflex rule, then run.
 
 Each new scenario also gives the **dream loop** more material to
-consolidate, so the local Qwen3-VL student gets stronger every night
-without any code changes.
+consolidate, so the VLM's strategies improve every night without any
+code changes.
 
 
 ## Where to go next

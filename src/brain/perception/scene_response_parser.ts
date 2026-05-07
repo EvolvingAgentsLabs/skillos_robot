@@ -37,6 +37,9 @@ export function parseGeminiSceneResponse(text: string): GeminiObject[] {
 
   let json = text.trim();
 
+  // Strip Qwen3-style <think>...</think> reasoning tags (emitted before JSON)
+  json = json.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
+
   // Strip markdown code fences (```json ... ``` or ``` ... ```)
   if (json.startsWith('```')) {
     json = json.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?\s*```\s*$/, '');

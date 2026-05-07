@@ -1,8 +1,8 @@
 /**
- * Dream Inference Router — Gemini Robotics inference for dream simulation
+ * Dream Inference Router — Multi-backend inference for dream simulation
  *
  * During dreaming, the robot needs an inference backend to decide motor commands
- * based on text scene descriptions. Uses Gemini Robotics exclusively.
+ * based on text scene descriptions. Supports Gemini, OpenRouter, and Ollama.
  *
  * All modes use text-only scenes (no images) since dream simulation doesn't
  * have a camera feed — scenes are described as text by TextSceneSimulator.
@@ -10,12 +10,13 @@
 
 import type { InferenceFunction } from '../../../llmunix-core/interfaces';
 import { GeminiRoboticsInference, ROCLAW_TOOL_DECLARATIONS } from '../../inference/gemini_robotics';
+import { CerebellumInference } from '../../inference/inference';
 
 // =============================================================================
 // Types
 // =============================================================================
 
-export type DreamInferenceMode = 'gemini' | 'ollama';
+export type DreamInferenceMode = 'gemini' | 'ollama' | 'openrouter';
 
 export interface DreamInferenceRouterConfig {
   mode?: DreamInferenceMode;
@@ -35,6 +36,10 @@ export interface DreamInferenceRouterConfig {
   ollamaUrl?: string;
   /** Ollama model name (default: roclaw-nav:q8_0) */
   ollamaModel?: string;
+  /** OpenRouter API key (required when mode='openrouter') */
+  openRouterApiKey?: string;
+  /** OpenRouter model (default: qwen/qwen3-vl-8b-instruct) */
+  openRouterModel?: string;
 }
 
 export interface InferenceStats {
@@ -45,7 +50,7 @@ export interface InferenceStats {
 }
 
 // =============================================================================
-// Dream Inference Router — Gemini Only
+// Dream Inference Router — Multi-backend (OpenRouter, Gemini, Ollama)
 // =============================================================================
 
 export class DreamInferenceRouter {
@@ -61,10 +66,10 @@ export class DreamInferenceRouter {
   private totalLatencyMs: number = 0;
 
   constructor(config: DreamInferenceRouterConfig) {
-    this.activeMode = config.mode ?? 'gemini';
+    this.activeMode = config.mode ?? 'openrouter';
 
     if (this.activeMode === 'ollama') {
-      // Lazy-import to avoid requiring ollama_inference when using gemini
+      // Lazy-import to avoid requiring ollama_inference when using other modes
       const { OllamaInference } = require('../../inference/ollama_inference');
       const ollama = new OllamaInference({
         baseUrl: config.ollamaUrl,
@@ -75,10 +80,27 @@ export class DreamInferenceRouter {
       });
       this.textInfer = ollama.createInferenceFunction();
       this.imageInfer = ollama.createInferenceFunction(); // Ollama doesn't support images, but keeps interface consistent
+    } else if (this.activeMode === 'openrouter') {
+      const apiKey = config.openRouterApiKey || process.env.OPENROUTER_API_KEY || '';
+      if (!apiKey) {
+        throw new Error('Dream inference (openrouter mode) requires OPENROUTER_API_KEY');
+      }
+      const model = config.openRouterModel ?? process.env.QWEN_MODEL ?? 'qwen/qwen3-vl-8b-instruct';
+      const adapter = new CerebellumInference({
+        apiKey,
+        model,
+        maxTokens: config.maxTokens ?? 512,
+        temperature: config.temperature ?? 0.1,
+        timeoutMs: config.timeoutMs ?? 15000,
+      });
+      const inferFn = adapter.createInferenceFunction();
+      this.textInfer = inferFn;
+      this.imageInfer = inferFn; // OpenRouter supports images natively
     } else {
+      // Gemini mode
       const googleKey = config.googleApiKey || process.env.GOOGLE_API_KEY || '';
       if (!googleKey) {
-        throw new Error('Dream inference requires GOOGLE_API_KEY (Gemini Robotics backend)');
+        throw new Error('Dream inference (gemini mode) requires GOOGLE_API_KEY');
       }
 
       const imageModel = config.geminiModel ?? process.env.GEMINI_MODEL ?? 'gemini-3-flash-preview';

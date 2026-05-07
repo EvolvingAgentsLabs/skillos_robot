@@ -74,7 +74,7 @@ flowchart TB
     end
     subgraph L2["L2 · Perception · src/brain/perception"]
         SL[semantic_loop · 1-2 Hz]
-        Inf["inference<br/>gemini · ollama"]
+        Inf["inference<br/>openrouter · gemini · ollama"]
         VP[vision_projector]
         TM[telemetry_monitor]
     end
@@ -132,7 +132,7 @@ The key architectural innovation: **perception and motor control are fully decou
 sequenceDiagram
     participant Cam as Camera
     participant SL as SemanticLoop (1-2 Hz)
-    participant VLM as Gemini / Ollama
+    participant VLM as OpenRouter / Gemini / Ollama
     participant SG as SceneGraph (shared)
     participant RL as ReactiveLoop (20 Hz)
     participant RC as ReactiveController
@@ -245,8 +245,8 @@ flowchart TB
     Gguf -- "ollama load" --> Run
 
     Pool --> Dream{dream engine}
-    Dream -- "Gemini<br/>(default)" --> Strat[strategies/*.md]
-    Dream -- "Ollama<br/>(--local)" --> Strat
+    Dream -- "OpenRouter<br/>(default)" --> Strat[strategies/*.md]
+    Dream -- "Gemini<br/>(--gemini)" --> Strat
     Strat --> Run
 ```
 
@@ -373,8 +373,9 @@ odometry for drift-free pose estimation.
 flowchart LR
     AppOpen[boot] -.->|"allowed"| Cam[camera]
     AppOpen -.->|"allowed"| ESP[ESP32-S3-CAM LAN]
-    AppOpen -.->|"allowed"| Ollama[localhost ollama]
+    AppOpen -.->|"allowed"| OpenRouter[OpenRouter API]
     AppOpen -.->|"opt-in"| Gemini[gemini API]
+    AppOpen -.->|"opt-in"| Ollama[localhost ollama]
     AppOpen --x|"forbidden"| Cloud[any other outbound]
 ```
 
@@ -385,7 +386,7 @@ flowchart LR
 - **Fidelity is monotonic in storage.** A real-world trace can be
   re-rendered as a dream (lower fidelity) but the reverse is forbidden.
 - **All inference goes through `inference.ts`** — the abstraction over
-  Gemini and Ollama. Swapping backends is a one-line change.
+  OpenRouter, Gemini, and Ollama. Swapping backends is a one-line env change.
 - **Reactive loop never blocks on VLM.** Motor output is always available
   regardless of inference latency.
 
@@ -407,9 +408,9 @@ src/
 │   │   ├── external_camera.ts       ← overhead camera adapter
 │   │   └── telemetry_monitor.ts     ← pose feedback from ESP32
 │   ├── inference/                   # LLM inference backends
-│   │   ├── inference.ts             ← gemini/ollama dispatcher
-│   │   ├── gemini_robotics.ts       ← Gemini teacher backend
-│   │   ├── ollama_inference.ts      ← Ollama student backend
+│   │   ├── inference.ts             ← OpenRouter/Qwen3-VL dispatcher (primary)
+│   │   ├── gemini_robotics.ts       ← Gemini alternative backend
+│   │   ├── ollama_inference.ts      ← Ollama local backend (text-only, no images)
 │   │   └── dream_inference.ts       ← dream-mode VLM driver
 │   ├── planning/                    # Goal decomposition
 │   │   ├── index.ts                 ← CortexNode gateway
@@ -464,7 +465,29 @@ scripts/
 ```
 
 
-## Recent changes (2026-04-30)
+## Recent changes (2026-05-06)
+
+OpenRouter / Qwen3-VL-8B migration:
+
+- **OpenRouter as primary backend.** Switched default VLM inference from
+  Gemini Robotics-ER to Qwen3-VL-8B via OpenRouter ($0.08/M input,
+  $0.50/M output, 131K context, vision-capable). Single API key for
+  motor control, perception, and dream consolidation.
+- **SceneGraphPolicy for OpenRouter.** Enabled the dual-loop perception
+  pipeline (SemanticLoop + ReactiveLoop) for OpenRouter — previously
+  gated behind `--gemini` flag only.
+- **Qwen3 think-tag handling.** Scene response parser strips
+  `<think>...</think>` reasoning tags emitted by Qwen3 models before
+  JSON parsing.
+- **Dream engine multi-backend.** Dream consolidation and dream
+  simulation both support OpenRouter, Gemini, and Ollama. OpenRouter is
+  the default; Gemini requires `DREAM_PROVIDER=gemini`.
+- **Token/timeout tuning for 8B model.** Increased default maxTokens
+  from 64→512 (motor control) and timeoutMs from 5000→15000 ms to
+  accommodate the 8B model's output length and OpenRouter routing
+  latency.
+
+### Previous changes (2026-04-30)
 
 Major architecture refactoring completed:
 

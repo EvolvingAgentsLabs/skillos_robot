@@ -37,10 +37,10 @@ export interface InferenceConfig {
 
 const DEFAULT_CONFIG: InferenceConfig = {
   apiKey: '',
-  model: 'qwen/qwen-2.5-vl-72b-instruct',
-  maxTokens: 64,
+  model: 'qwen/qwen3-vl-8b-instruct',
+  maxTokens: 512,
   temperature: 0.1,
-  timeoutMs: 5000,
+  timeoutMs: 15000,
   maxRetries: 1,
   supportsVision: true,
   apiBaseUrl: 'https://openrouter.ai/api/v1',
@@ -261,4 +261,27 @@ export function createCerebellumAdapter(
   config: Partial<InferenceConfig> & { apiKey: string }
 ): CerebellumInference {
   return new CerebellumInference(config);
+}
+
+/**
+ * Create an OpenRouter inference function configured for perception-only mode.
+ *
+ * Differences from the motor inference instance:
+ *   - maxTokens: 2048 (scene JSON with many objects)
+ *   - temperature: 0.1 (deterministic perception)
+ *   - timeoutMs: 20000 (perception can be slower)
+ *
+ * Used by SceneGraphPolicy and ShadowPerceptionLoop to get JSON bounding
+ * boxes from the OVERHEAD_SCENE_PROMPT without tool-call interference.
+ */
+export function createOpenRouterPerceptionInference(
+  config: Partial<InferenceConfig> & { apiKey: string },
+): InferenceFunction {
+  const adapter = new CerebellumInference({
+    ...config,
+    maxTokens: config.maxTokens ?? 2048,
+    temperature: config.temperature ?? 0.1,
+    timeoutMs: config.timeoutMs ?? 20000,
+  });
+  return adapter.createInferenceFunction();
 }

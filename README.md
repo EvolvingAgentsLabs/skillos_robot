@@ -1,6 +1,6 @@
 # skillos_robot
 
-A physical (or simulated) embodiment of `llm_os`. The robot exposes itself as a `robot.*` cartridge over WebSocket; an upstream `llm_os` kernel (running in a browser tab, or via skillos_mini's launcher) calls cartridge methods to navigate and observe the world. Internally the robot delegates to **remote LLMs as tools** — Gemini Robotics-ER for vision, Ollama-hosted Qwen3-VL as a local fallback, and the kernel-CPU running upstream as the strategic decision-maker.
+A physical (or simulated) embodiment of `llm_os`. The robot exposes itself as a `robot.*` cartridge over WebSocket; an upstream `llm_os` kernel (running in a browser tab, or via skillos_mini's launcher) calls cartridge methods to navigate and observe the world. Internally the robot delegates to **remote LLMs as tools** — Qwen3-VL-8B via OpenRouter for vision (default), Gemini Robotics-ER as an alternative, and the kernel-CPU running upstream as the strategic decision-maker.
 
 In one sentence: **`skillos_robot` is the `vision + motors` device driver of `llm_os`.**
 
@@ -21,8 +21,8 @@ skillos_mini launcher (chooses the strategy markdown)
 skillos_robot cartridge adapter (this repo, src/cartridge/)
         │
         │  Internally uses these LLMs as tools:
-        │  - Gemini Robotics-ER (cloud, vision)  — produces SceneGraph
-        │  - Qwen3-VL via Ollama (local, fallback)
+        │  - Qwen3-VL-8B via OpenRouter (cloud, default) — produces SceneGraph
+        │  - Gemini Robotics-ER (cloud, alternative)
         │  - HierarchicalPlanner with stub or real infer
         ▼
 ReactiveController @ 20 Hz → bytecode → ESP32-S3-CAM (UDP)
@@ -30,7 +30,7 @@ ReactiveController @ 20 Hz → bytecode → ESP32-S3-CAM (UDP)
                                       MJPEG camera feeds the VLM loop
 ```
 
-The kernel-CPU upstream doesn't know about Gemini, Ollama, or UDP. It knows about cartridge methods. The robot translates high-level intent into perception calls and motor primitives.
+The kernel-CPU upstream doesn't know about OpenRouter, Gemini, or UDP. It knows about cartridge methods. The robot translates high-level intent into perception calls and motor primitives.
 
 ## Cartridge interface (the public surface)
 
@@ -40,7 +40,7 @@ All five methods exposed to upstream LLM-OS callers via WebSocket at `ws://<host
 |---|---|
 | `robot.observe({})` | Returns `SceneGraph.toJSON()` — fed by the VLM loop |
 | `robot.describe({})` | Returns the most recent VLM textual description |
-| `robot.navigate({goal, …})` | `HierarchicalPlanner.planGoal()` (uses an `infer` function — typically Gemini, optionally Ollama, or stub for protocol smoke tests) |
+| `robot.navigate({goal, …})` | `HierarchicalPlanner.planGoal()` (uses an `infer` function — typically OpenRouter/Qwen3-VL, optionally Gemini, or stub for protocol smoke tests) |
 | `robot.set_speed({max})` | Mutates `ReactiveController.setSpeedTier()` |
 | `robot.stop({})` | UDP STOP frame (opcode `0x07`) — bypasses the loops, ESP32 firmware halts within one tick |
 
@@ -64,8 +64,8 @@ Then any WebSocket client can issue cartridge calls. See [`src/cartridge/README.
 The original CLI still works for direct robot driving:
 
 ```bash
-robot navigate "go to the red cube"            # cloud teacher (Gemini)
-robot navigate --local "go through the doorway"# local fallback (Qwen3-VL via Ollama)
+robot navigate "go to the red cube"            # cloud VLM (OpenRouter Qwen3-VL-8B)
+robot navigate --gemini "go through the doorway"# Gemini Robotics-ER alternative
 robot navigate --egocentric "go to the red cube"
 robot sim --serve                              # MuJoCo bridge
 robot dream                                    # nightly trace replay
@@ -77,11 +77,12 @@ robot status
 
 The robot uses *other LLMs* as building blocks. They're tools in the cartridge sense — pluggable, optional, called as needed:
 
-- **Gemini Robotics-ER** (cloud, default). Vision + spatial reasoning. Returns labeled bounding boxes; SceneGraph projector turns them into 3D arena coordinates. Set `GOOGLE_API_KEY` in `.env`.
-- **Qwen3-VL via Ollama** (local fallback). No internet. Same output shape (after the scene-response parser normalizes). Use `--local` flag to the CLI; the `cartridge:demo` script picks it automatically if Gemini is unset.
+- **Qwen3-VL-8B via OpenRouter** (cloud, default). Vision-capable, supports images. $0.08/M input, $0.50/M output, 131K context. Returns labeled bounding boxes; SceneGraph projector turns them into 3D arena coordinates. Set `OPENROUTER_API_KEY` in `.env`.
+- **Gemini Robotics-ER** (cloud, alternative). Vision + spatial reasoning with native tool calling. Use `--gemini` flag. Set `GOOGLE_API_KEY` in `.env`.
+- **Ollama** (local fallback). No internet, text-only (does not support images). Use `--ollama` flag for offline motor control without vision.
 - **The upstream LLM-OS kernel** is itself an "LLM as tool" — it's the one that decides *what* to do; this robot just does it.
 
-The robot doesn't ship with its own LLM. It composes: a remote teacher (Gemini), a local student (Ollama), and an upstream conductor (the kernel) — three different LLMs, each used for what it's best at.
+The robot doesn't ship with its own LLM. It composes: a cloud VLM (OpenRouter/Qwen3-VL), an optional alternative (Gemini), and an upstream conductor (the kernel) — multiple LLMs, each used for what it's best at.
 
 ## Two ISAs, no conflict
 
