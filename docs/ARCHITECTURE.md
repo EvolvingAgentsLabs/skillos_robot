@@ -55,6 +55,78 @@ formation). The reflex guard at L0 has direct authority to veto motor
 commands before they reach the bytecode compiler.
 
 
+## ISA Orchestrator
+
+When the robot runs standalone (no upstream `llm_os` kernel), the ISA orchestrator provides a conversational LLM brain:
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#001a14','primaryTextColor':'#bbf7d0','primaryBorderColor':'#00ff7f','lineColor':'#4ade80','secondaryColor':'#001a24','background':'#000','mainBkg':'#001a14','clusterBkg':'#000','clusterBorder':'#4ade80','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
+flowchart TB
+    subgraph Orch["ISA Orchestrator (src/orchestrator/)"]
+        LLM["Gemma 4 (26B-A4B via OpenRouter)"]
+        Disp[dispatch.ts -- regex opcode parser]
+        Exec[executor.ts -- ISA loop + fd handlers]
+        IO[io.ts -- speak/listen adapters]
+    end
+    subgraph Cart["Cartridge Methods (src/cartridge/)"]
+        Nav[navigate]
+        Obs[observe / describe]
+        Spk[speak / listen]
+        Stp[stop / set_speed]
+    end
+    subgraph Motor["Motor Control (existing, untouched)"]
+        RC[ReactiveController @ 20 Hz]
+        SG[SceneGraph]
+        BC[BytecodeCompiler]
+    end
+
+    LLM -->|"ISA opcodes"| Disp
+    Disp --> Exec
+    Exec --> Nav
+    Exec --> Obs
+    Exec --> Spk
+    Exec --> Stp
+    Nav --> RC
+    RC --> SG
+    RC --> BC
+    IO --> Spk
+```
+
+### ISA opcodes
+
+The orchestrator LLM emits one opcode per turn using the same 14-opcode set as `llm_os v3`:
+
+| Opcode | Purpose |
+|---|---|
+| `call` | Invoke a cartridge method (navigate, observe, speak, listen, etc.) |
+| `halt` | End execution with a status |
+| `think` | Internal reasoning (not sent to cartridge) |
+| `wait` | Block on an I/O port (fd=3 for navigation, fd=4/5 for speech) |
+| `fault` | Handle errors with recovery strategy |
+| `commit` | Persist state |
+| `loop` / `break` | Control flow |
+| `fork` / `yield` | Concurrency primitives |
+| `read` / `write` | I/O port access |
+| `policy` | Set execution policy |
+
+### I/O ports
+
+| Port | Purpose | Adapter |
+|---|---|---|
+| fd=3 | Navigation events (arrival/stuck/timeout) | Blocks until ReactiveController detects arrival |
+| fd=4 | Microphone input | IOAdapter.listen() |
+| fd=5 | Speaker output | IOAdapter.speak() |
+
+### 2D simulation
+
+`run_sim.ts` integrates the orchestrator with a 20 Hz motor control loop and a 2D browser visualization:
+
+- **WebSocket server** (port 9091) broadcasts pose, goal, speech, and arrival events at 5 Hz
+- **HTTP server** (port 9092) serves `sim/sim2d.html` -- a standalone canvas-based top-down viewer
+- **Dead-reckoning kinematics** update robot pose using differential drive math (wheel radius 3cm, wheel base 10cm)
+- **Optional UDP bridge** for MuJoCo 3D physics when available
+
+
 ## The 5-tier stack
 
 ```mermaid
@@ -435,6 +507,16 @@ src/
 │   ├── reactive_controller.ts       ← pure vector-math motor decisions
 │   ├── reflex_guard.ts              ← AABB collision veto (L0)
 │   └── bytecode_compiler.ts         ← ISA v1 encode/decode
+├── orchestrator/                    # ISA orchestrator (autonomous brain)
+│   ├── backend.ts                   ← OpenRouter API client with retry
+│   ├── dispatch.ts                  ← ISA opcode regex parser + tolerant JSON
+│   ├── executor.ts                  ← ISA execution loop, 14 opcodes, dataset export
+│   ├── io.ts                        ← I/O adapters: Console, MacOS say, Stub
+│   ├── cli.ts                       ← Standalone CLI runner
+│   ├── run_sim.ts                   ← 2D sim: orchestrator + 20 Hz control + WS viewer
+│   ├── manifest.json                ← Robot ISA cartridge declaration
+│   ├── schemas/                     ← JSON schemas for speak/listen args
+│   └── index.ts                     ← Public exports
 ├── bridge/                          # Hardware + simulator translation
 │   ├── udp_transmitter.ts           ← UDP → ESP32-S3-CAM
 │   ├── mjswan_bridge.ts            ← MuJoCo WebSocket bridge
@@ -465,7 +547,31 @@ scripts/
 ```
 
 
-## Recent changes (2026-05-06)
+## Recent changes (2026-05-11)
+
+ISA orchestrator + 2D simulation:
+
+- **ISA orchestrator.** New `src/orchestrator/` module (8 files) ports the
+  `llm_os v3` ISA execution loop to TypeScript. Gemma 4 (26B-A4B via
+  OpenRouter) emits ISA opcodes; the executor dispatches them to the robot's
+  cartridge methods. Supports all 14 opcodes: call, halt, think, read, write,
+  loop, break, fork, yield, wait, commit, fault, policy.
+- **Speak + listen cartridge methods.** Added `robot.speak({text})` and
+  `robot.listen({timeout_s})` to the cartridge interface. Pluggable I/O
+  adapters: ConsoleIO (stdin/stdout), MacOS `say`, Stub (canned responses).
+- **2D simulation viewer.** `sim/sim2d.html` -- standalone HTML+JS canvas
+  top-down visualization. No build step, no dependencies. Connects via
+  WebSocket to receive pose, goal, speech, and arrival events.
+- **Integrated sim runner.** `run_sim.ts` combines the ISA orchestrator with
+  a 20 Hz ReactiveController loop, dead-reckoning kinematics, WebSocket
+  state broadcast (5 Hz), and HTTP file server for the 2D viewer.
+- **Dead-reckoning kinematic model.** Differential drive kinematics using
+  RoClaw chassis dimensions (wheel radius 3cm, wheel base 10cm, max angular
+  velocity 1.5708 rad/s). Used as fallback when no MuJoCo physics is available.
+- **Care assistant scenario.** End-to-end demo: robot greets people, asks
+  questions, listens for answers, navigates to requested door, reports arrival.
+
+### Previous changes (2026-05-06)
 
 OpenRouter / Qwen3-VL-8B migration:
 

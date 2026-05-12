@@ -55,4 +55,16 @@ export const SCENARIO_PRESETS: Record<string, ScenarioPreset> = {
     ],
     mjcfFile: 'roclaw_scavenger.xml',
   },
+  'care-assistant': {
+    id: 'care-assistant',
+    name: 'Care Assistant — Door Choice',
+    goal: 'approach the nearest person, ask which door they want (blue or green), then navigate to that door',
+    target: 'blue_door:-0.8:1.5:0.25',
+    targets: [
+      'person_1:-0.6:-0.5:0.25',
+      'blue_door:-0.8:1.5:0.25',
+      'green_door:0.8:1.5:0.25',
+    ],
+    mjcfFile: 'roclaw_care_assistant.xml',
+  },
 };

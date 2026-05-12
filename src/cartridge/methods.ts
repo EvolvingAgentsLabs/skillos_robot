@@ -205,10 +205,55 @@ const setSpeed: MethodImpl = async (args, _ctx, reqId) => {
   });
 };
 
+// ── speak ────────────────────────────────────────────────────────
+// Speaks text aloud via the registered IOAdapter. In console mode,
+// prints to stdout. In MacOS mode, calls `say`. In stub mode, logs
+// and records. Returns immediately after speech completes.
+const speak: MethodImpl = async (args, _ctx, reqId) => {
+  const text = String(args.text ?? '').trim();
+  if (!text) return makeError(reqId, ERR.INVALID_ARGS, 'speak requires args.text (string)');
+
+  const { ioAdapter } = getRobotState();
+  if (!ioAdapter) {
+    return makeError(reqId, ERR.HARDWARE_UNAVAILABLE,
+      'IOAdapter not registered. Call setRobotState({ioAdapter}) with a speak/listen adapter.');
+  }
+
+  try {
+    await ioAdapter.speak(text);
+    return makeResult(reqId, { spoken: true, text });
+  } catch (err) {
+    return makeError(reqId, ERR.INTERNAL, `speak failed: ${(err as Error).message}`);
+  }
+};
+
+// ── listen ───────────────────────────────────────────────────────
+// Listens for user input via the registered IOAdapter. In console
+// mode, reads from stdin. In stub mode, returns canned responses.
+// Blocks until input is received or timeout expires.
+const listen: MethodImpl = async (args, _ctx, reqId) => {
+  const timeoutS = Number(args.timeout_s ?? 30);
+
+  const { ioAdapter } = getRobotState();
+  if (!ioAdapter) {
+    return makeError(reqId, ERR.HARDWARE_UNAVAILABLE,
+      'IOAdapter not registered. Call setRobotState({ioAdapter}) with a speak/listen adapter.');
+  }
+
+  try {
+    const text = await ioAdapter.listen(timeoutS * 1000);
+    return makeResult(reqId, { text, silence: text === '[silence]' });
+  } catch (err) {
+    return makeError(reqId, ERR.INTERNAL, `listen failed: ${(err as Error).message}`);
+  }
+};
+
 export const METHODS: Record<string, MethodImpl> = {
   navigate,
   observe,
   describe,
   stop,
   set_speed: setSpeed,
+  speak,
+  listen,
 };

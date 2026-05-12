@@ -54,59 +54,67 @@ cp .env.example .env   # edit OPENROUTER_API_KEY + ROBOT_IP if you have them
 
 ## Simulation
 
-The fastest way to see RoClaw in action is the 3D simulation.
+### 2D simulation (recommended)
 
-### terminal 1 — start the bridge + scene
+The fastest way to see RoClaw in action. Single command, no external
+dependencies:
 
 ```bash
-# Builds the MuJoCo arena, serves the WS bridge on :9090,
-# the tool server on :8440, and an MJPEG overhead-camera on :8081.
-cd sim
-python build_scene.py
-# Or, for the bundled bridge:
-cd .. && npm run sim:3d -- --serve
+OPENROUTER_API_KEY=sk-or-v1-... npm run sim:2d
 ```
 
-### terminal 2 — open the browser viewer
+Then open **http://localhost:9092** in your browser. You'll see a top-down
+canvas showing the robot, people, doors, and obstacles. The robot runs the
+care assistant scenario autonomously:
 
-```
+1. Observes the scene
+2. Greets the nearest person
+3. Asks which door they'd like to go to
+4. Listens for their answer
+5. Navigates to the chosen door
+6. Announces arrival
+
+The side panel shows real-time status: robot position, heading, goal,
+distance, and a conversation log of all speech.
+
+**Ports used:**
+- `http://localhost:9092` -- 2D viewer (HTML served here)
+- `ws://localhost:9091` -- WebSocket state broadcast (5 Hz pose updates)
+- `udp://127.0.0.1:4210` -- optional UDP bridge (works without it)
+
+**Environment variables:**
+- `OPENROUTER_API_KEY` -- required (Gemma 4 orchestrator)
+- `ORCHESTRATOR_MODEL` -- optional (default: `google/gemma-4-26b-a4b-it`)
+- `SIM_WS_PORT` -- WebSocket port (default: 9091)
+- `SIM_HTTP_PORT` -- HTTP viewer port (default: 9092)
+
+### 3D simulation (MuJoCo bridge)
+
+For physics-accurate 3D rendering via MuJoCo:
+
+```bash
+# Terminal 1 -- start the bridge
+npm run sim:3d -- --serve
+
+# Terminal 2 -- open the browser viewer
 open http://localhost:8000?bridge=ws://localhost:9090
+
+# Terminal 3 -- drive the robot
+npm run sim:3d -- --goal "navigate to the red cube"
 ```
 
-You should see:
-- A 20 cm yellow cube robot at the center.
-- A red cube target ~1.3 m away.
-- An overhead camera feed in the top-right corner.
-
-### terminal 3 — drive the robot
+### ISA orchestrator modes
 
 ```bash
-# Default (OpenRouter Qwen3-VL-8B, requires OPENROUTER_API_KEY):
-npm run sim:3d -- --goal "navigate to the red cube"
+# 2D simulation with browser visualization (recommended):
+npm run sim:2d
 
-# Gemini alternative (requires GOOGLE_API_KEY):
-npm run sim:3d -- --gemini --goal "navigate to the red cube"
+# Console mode (interactive stdin/stdout, no browser):
+npm run orchestrator:demo
 
-# Local offline (no internet, text-only — no image perception):
-npm run sim:3d -- --ollama --goal "navigate to the red cube"
-
-# A/B both at once for benchmarking:
-npm run sim:3d -- --shadow --goal "go through the doorway"
+# Dataset generation (automated, stub I/O, for fine-tuning):
+npm run orchestrator:dataset
 ```
-
-You'll see a streaming log:
-
-```
-[OK] cortex          ▸ planner ▸ "approach red object · safe distance"
-[OK] cerebellum      ▸ camera ▸ openrouter ▸ qwen3-vl-8b
-[OK] vision_proj     ▸ box_2d → arena_xyz
-[OK] reactive_ctrl   ▸ bearing -8.4° · distance 128 cm
-▸ sending bytecode  ▸ AA 4F 02 28 00 02 6B FF  (rotate_cw 8°)
-       ack          ▸ 42 ms
-```
-
-When the goal is reached (or fails), the run writes a markdown trace to
-`traces/sim3d/<timestamp>.md`.
 
 
 ## Hardware
@@ -359,11 +367,12 @@ don't trigger vetoes.
 ```
   ┌─[ COMMANDS ]──────────────────────────────────────────────────────┐
   │                                                                    │
-  │  npm run sim:3d -- --serve         start the simulation bridge    │
+  │  npm run sim:2d                    2D sim + ISA orchestrator       │
+  │  npm run orchestrator:demo         orchestrator (console I/O)     │
+  │  npm run orchestrator:dataset      generate fine-tuning dataset   │
+  │  npm run sim:3d -- --serve         start the 3D MuJoCo bridge    │
   │  npm run sim:3d -- --goal "..."    default (OpenRouter Qwen3-VL)  │
-  │  npm run sim:3d -- --gemini        Gemini alternative             │
-  │  npm run sim:3d -- --ollama        local offline (no images)      │
-  │  npm run sim:3d -- --shadow        A/B both                       │
+  │  npm run cartridge:demo            cartridge adapter (WS :7424)   │
   │  npm run hardware:test             smoke test on real ESP32       │
   │  npm run dream:loop                overnight consolidation        │
   │  npm run ab:test                   benchmark cognitive stack       │

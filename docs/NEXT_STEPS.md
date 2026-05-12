@@ -352,6 +352,28 @@ contribute diversity by virtue of the operator simply running the
 robot.
 
 
+## Recently completed (2026-05-11)
+
+```
+  ┌─[ COMPLETED ]────────────────────────────────────────────────────┐
+  │                                                                   │
+  │  ✓ §2.A · VLMMotorPolicy removed · SceneGraph is the only path   │
+  │  ✓ ISA orchestrator (src/orchestrator/) · Gemma 4 brain           │
+  │    - 14-opcode ISA executor with dataset export                   │
+  │    - speak + listen cartridge methods with pluggable I/O          │
+  │    - Care assistant end-to-end demo working                       │
+  │  ✓ 2D simulation viewer (sim/sim2d.html)                          │
+  │    - Canvas top-down visualization, no build step                  │
+  │    - WebSocket state broadcast at 5 Hz                             │
+  │    - Dead-reckoning kinematic model                                │
+  │  ✓ Integrated sim runner (run_sim.ts)                              │
+  │    - Orchestrator + 20 Hz control loop + WS + HTTP server          │
+  │    - npm run sim:2d → http://localhost:9092                        │
+  │                                                                   │
+  └───────────────────────────────────────────────────────────────────┘
+```
+
+
 ## Summary checklist
 
 ```
@@ -364,7 +386,7 @@ robot.
   │  ▸ flip default to --ollama · cut gemini to opt-in             │
   │                                                                │
   │  §2 REMOVE                                                     │
-  │  ▸ §2.A · drop VLMMotorPolicy · scene-graph as only path       │
+  │  ▸ §2.A · DONE · VLMMotorPolicy removed                        │
   │  ▸ §2.B · drop text_scene.ts · MuJoCo dreams only              │
   │  ▸ §2.C · drop ISA V1 frame · 8 bytes hardcoded                │
   │  ▸ §2.D · drop step-based opcodes + GET_STATUS                 │
@@ -373,6 +395,12 @@ robot.
   │  ▸ §3.A · BNO085 IMU + visual odometry + EKF fusion            │
   │  ▸ §3.B · monocular depth in VLM prompt · distance_cm field    │
   │  ▸ §3.C · continuous dream flywheel · auto LoRA + hot-swap     │
+  │                                                                │
+  │  §4 ORCHESTRATOR (NEW)                                          │
+  │  ▸ §4.A · fine-tune Gemma 4 on ISA traces (JSONL dataset)      │
+  │  ▸ §4.B · real speech I/O (Whisper STT + ElevenLabs TTS)       │
+  │  ▸ §4.C · multi-scenario orchestrator (beyond care assistant)  │
+  │  ▸ §4.D · connect orchestrator to real ESP32 hardware           │
   │                                                                │
   └────────────────────────────────────────────────────────────────┘
 ```

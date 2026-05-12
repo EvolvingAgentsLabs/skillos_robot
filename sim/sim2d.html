@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>RoClaw Care Assistant — 2D Sim</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #e0e0e0; font-family: 'Courier New', monospace; display: flex; height: 100vh; }
+  #arena { background: #16213e; border-right: 2px solid #333; }
+  #panel { flex: 1; display: flex; flex-direction: column; min-width: 320px; max-width: 400px; }
+  #status { padding: 12px; background: #0f3460; font-size: 13px; line-height: 1.6; }
+  #status .label { color: #888; }
+  #status .val { color: #e94560; font-weight: bold; }
+  #log { flex: 1; overflow-y: auto; padding: 12px; font-size: 12px; line-height: 1.5; }
+  .log-speak { color: #53cfcf; }
+  .log-listen { color: #f5c542; }
+  .log-nav { color: #7bed9f; }
+  .log-info { color: #888; }
+  .log-arrive { color: #2ed573; font-weight: bold; }
+  #conn { padding: 6px 12px; font-size: 11px; text-align: center; }
+  .connected { background: #2d6a4f; color: #b7e4c7; }
+  .disconnected { background: #6a2d2d; color: #e4b7b7; }
+</style>
+</head>
+<body>
+<canvas id="arena" width="600" height="600"></canvas>
+<div id="panel">
+  <div id="conn" class="disconnected">Disconnected</div>
+  <div id="status">
+    <div><span class="label">Robot:</span> <span class="val" id="s-pos">(0, -100)</span> heading <span class="val" id="s-hdg">90</span>deg</div>
+    <div><span class="label">Goal:</span> <span class="val" id="s-goal">none</span></div>
+    <div><span class="label">Distance:</span> <span class="val" id="s-dist">--</span> cm</div>
+    <div><span class="label">Action:</span> <span class="val" id="s-action">idle</span></div>
+    <div><span class="label">Step:</span> <span class="val" id="s-step">0</span></div>
+  </div>
+  <div id="log"></div>
+</div>
+
+<script>
+// ── Scene objects (cm, matches SceneGraph) ───────────────────
+const OBJECTS = [
+  { id: 'person_1',   x: -60, y: -50,  color: '#f5c542', w: 20, h: 20, label: 'Person 1' },
+  { id: 'person_2',   x:  60, y: -50,  color: '#e67e22', w: 20, h: 20, label: 'Person 2' },
+  { id: 'blue_door',  x: -80, y: 150,  color: '#3498db', w: 24, h: 24, label: 'Blue Door' },
+  { id: 'green_door', x:  80, y: 150,  color: '#2ecc71', w: 24, h: 24, label: 'Green Door' },
+  { id: 'obstacle',   x:  30, y:  50,  color: '#7f8c8d', w: 16, h: 16, label: 'Obstacle' },
+];
+
+// Arena: 4m x 4m = 400cm x 400cm, centered at origin
+const ARENA_CM = 400;
+const CANVAS_PX = 600;
+const SCALE = CANVAS_PX / ARENA_CM;
+
+// State
+let robot = { x: 0, y: -100, heading: 90 };
+let goalId = null;
+let lastAction = 'idle';
+let distanceCm = 0;
+let step = 0;
+
+const canvas = document.getElementById('arena');
+const ctx = canvas.getContext('2d');
+
+// ── Coordinate transform: scene cm → canvas px ──────────────
+function toCanvas(x, y) {
+  // Origin at center, Y up → Y down flip
+  return [
+    CANVAS_PX / 2 + x * SCALE,
+    CANVAS_PX / 2 - y * SCALE,
+  ];
+}
+
+// ── Draw ─────────────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0, 0, CANVAS_PX, CANVAS_PX);
+
+  // Grid
+  ctx.strokeStyle = '#1e3a5f';
+  ctx.lineWidth = 0.5;
+  for (let i = -200; i <= 200; i += 50) {
+    const [x1, y1] = toCanvas(i, -200);
+    const [x2, y2] = toCanvas(i, 200);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    const [x3, y3] = toCanvas(-200, i);
+    const [x4, y4] = toCanvas(200, i);
+    ctx.beginPath(); ctx.moveTo(x3, y3); ctx.lineTo(x4, y4); ctx.stroke();
+  }
+
+  // Arena border
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 2;
+  const [bx, by] = toCanvas(-200, 200);
+  ctx.strokeRect(bx, by, ARENA_CM * SCALE, ARENA_CM * SCALE);
+
+  // Axis labels
+  ctx.fillStyle = '#555';
+  ctx.font = '10px monospace';
+  ctx.fillText('+Y (North)', CANVAS_PX / 2 - 25, 15);
+  ctx.fillText('-Y (South)', CANVAS_PX / 2 - 25, CANVAS_PX - 5);
+
+  // Objects
+  for (const obj of OBJECTS) {
+    const [cx, cy] = toCanvas(obj.x, obj.y);
+    const pw = obj.w * SCALE;
+    const ph = obj.h * SCALE;
+
+    ctx.fillStyle = obj.color;
+    ctx.globalAlpha = goalId === obj.id ? 1.0 : 0.7;
+    ctx.fillRect(cx - pw / 2, cy - ph / 2, pw, ph);
+    ctx.globalAlpha = 1.0;
+
+    // Highlight goal
+    if (goalId === obj.id) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(cx - pw / 2 - 4, cy - ph / 2 - 4, pw + 8, ph + 8);
+      ctx.setLineDash([]);
+    }
+
+    // Label
+    ctx.fillStyle = '#ccc';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(obj.label, cx, cy + ph / 2 + 12);
+  }
+
+  // Robot trail (just current pos indicator ring)
+  const [rx, ry] = toCanvas(robot.x, robot.y);
+
+  // Robot body
+  ctx.save();
+  ctx.translate(rx, ry);
+  // heading: 0° = +X (east), 90° = +Y (north). Canvas: 0 = right, positive = clockwise.
+  // So canvas angle = -heading (in radians)
+  const canvasAngle = -(robot.heading * Math.PI / 180);
+  ctx.rotate(canvasAngle);
+
+  // Chassis (15cm x 10cm)
+  const cw = 15 * SCALE;
+  const ch = 10 * SCALE;
+  ctx.fillStyle = '#2c3e88';
+  ctx.fillRect(-cw / 2, -ch / 2, cw, ch);
+  ctx.strokeStyle = '#4a69bd';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(-cw / 2, -ch / 2, cw, ch);
+
+  // Heading arrow
+  ctx.fillStyle = '#e94560';
+  ctx.beginPath();
+  ctx.moveTo(cw / 2 + 6, 0);
+  ctx.lineTo(cw / 2 - 2, -5);
+  ctx.lineTo(cw / 2 - 2, 5);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+
+  // Distance line to goal
+  if (goalId) {
+    const goalObj = OBJECTS.find(o => o.id === goalId);
+    if (goalObj) {
+      const [gx, gy] = toCanvas(goalObj.x, goalObj.y);
+      ctx.strokeStyle = 'rgba(233, 69, 96, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(gx, gy); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Distance label
+      ctx.fillStyle = '#e94560';
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${Math.round(distanceCm)}cm`, (rx + gx) / 2, (ry + gy) / 2 - 6);
+    }
+  }
+
+  // Robot position label
+  ctx.fillStyle = '#aaa';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`(${Math.round(robot.x)}, ${Math.round(robot.y)})`, rx, ry + ch / 2 + 14);
+
+  requestAnimationFrame(draw);
+}
+
+// ── Update status panel ──────────────────────────────────────
+function updateStatus() {
+  document.getElementById('s-pos').textContent = `(${Math.round(robot.x)}, ${Math.round(robot.y)})`;
+  document.getElementById('s-hdg').textContent = Math.round(robot.heading);
+  document.getElementById('s-goal').textContent = goalId || 'none';
+  document.getElementById('s-dist').textContent = distanceCm > 0 ? Math.round(distanceCm) : '--';
+  document.getElementById('s-action').textContent = lastAction;
+  document.getElementById('s-step').textContent = step;
+}
+
+// ── Log panel ────────────────────────────────────────────────
+function addLog(cls, text) {
+  const el = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = text;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── WebSocket connection ─────────────────────────────────────
+const WS_URL = new URLSearchParams(window.location.search).get('ws') || 'ws://localhost:9091';
+let ws = null;
+let reconnectTimer = null;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  const connEl = document.getElementById('conn');
+
+  ws.onopen = () => {
+    connEl.className = 'connected';
+    connEl.textContent = 'Connected to orchestrator';
+    addLog('log-info', '-- Connected --');
+  };
+
+  ws.onclose = () => {
+    connEl.className = 'disconnected';
+    connEl.textContent = 'Disconnected — reconnecting...';
+    reconnectTimer = setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+
+      if (msg.type === 'pose') {
+        robot.x = msg.x;
+        robot.y = msg.y;
+        robot.heading = msg.heading;
+        lastAction = msg.action || lastAction;
+        distanceCm = msg.distance || 0;
+        updateStatus();
+      } else if (msg.type === 'goal') {
+        goalId = msg.goalId;
+        addLog('log-nav', `Goal: ${msg.goalId}`);
+        updateStatus();
+      } else if (msg.type === 'speak') {
+        addLog('log-speak', `Robot: "${msg.text}"`);
+        step = msg.step || step;
+        updateStatus();
+      } else if (msg.type === 'listen') {
+        addLog('log-listen', `Person: "${msg.text}"`);
+        step = msg.step || step;
+        updateStatus();
+      } else if (msg.type === 'arrived') {
+        addLog('log-arrive', `ARRIVED: ${msg.reason}`);
+        goalId = null;
+        lastAction = 'arrived';
+        updateStatus();
+      } else if (msg.type === 'halt') {
+        addLog('log-arrive', `HALT: status=${msg.status}`);
+        lastAction = 'halted';
+        updateStatus();
+      } else if (msg.type === 'opcode') {
+        step = msg.step || step;
+        updateStatus();
+      }
+    } catch { /* ignore parse errors */ }
+  };
+}
+
+connect();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

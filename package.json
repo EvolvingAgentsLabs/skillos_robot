@@ -19,7 +19,11 @@
     "ab:test": "tsx scripts/ab_test_real.ts",
     "dream:loop": "tsx scripts/dream_loop.ts",
     "cartridge": "tsx src/cartridge/cli.ts",
-    "cartridge:demo": "tsx src/cartridge/demo_cli.ts"
+    "cartridge:demo": "tsx src/cartridge/demo_cli.ts",
+    "orchestrator": "tsx src/orchestrator/cli.ts",
+    "orchestrator:demo": "tsx src/orchestrator/cli.ts --io console",
+    "orchestrator:dataset": "tsx src/orchestrator/cli.ts --dataset --io stub",
+    "sim:2d": "tsx src/orchestrator/run_sim.ts"
   },
   "keywords": [
     "robot",

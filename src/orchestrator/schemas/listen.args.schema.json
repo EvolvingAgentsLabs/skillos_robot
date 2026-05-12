@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "timeout_s": {
+      "type": "number",
+      "default": 30,
+      "minimum": 1,
+      "maximum": 120,
+      "description": "Seconds to wait for user speech before returning silence"
+    }
+  }
+}

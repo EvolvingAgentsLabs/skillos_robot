@@ -5,7 +5,10 @@ dist/
 *.log
 .DS_Store
 
-# Runtime data (semantic map, trace logs)
+# Runtime trace data
+traces/
+
+# Runtime data (semantic map, trace logs — legacy paths)
 src/3_llmunix_memory/traces/semantic_map.json
 src/3_llmunix_memory/traces/topo_map.json
 src/3_llmunix_memory/traces/trace_*.md

@@ -12,6 +12,7 @@ import type { SceneGraph } from '../brain/memory/scene_graph';
 import type { ReactiveController } from '../control/reactive_controller';
 import type { HierarchicalPlanner } from '../brain/planning/planner';
 import type { VisionLoop } from '../brain/perception/vision_loop';
+import type { IOAdapter } from '../orchestrator/io';
 
 export interface RobotState {
   /** UDP transmitter to the ESP32. Unset → cartridge methods that need
@@ -36,6 +37,9 @@ export interface RobotState {
    *  execution (dual-loop perception + motor control) after planning.
    *  Must be the SAME instance with enableDualLoop() already called. */
   visionLoop?: VisionLoop;
+  /** I/O adapter for speak/listen methods. Set by the orchestrator or
+   *  by the CLI when speech is enabled. */
+  ioAdapter?: IOAdapter;
 }
 
 let state: RobotState = {};

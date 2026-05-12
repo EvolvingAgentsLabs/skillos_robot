@@ -1,0 +1,76 @@
+{
+  "name": "robot",
+  "version": "0.2.0",
+  "description": "skillos_robot ISA cartridge for the orchestrator. Navigation, perception, motor control, and speech I/O. The 20Hz reactive loop, reflex guard, and ESP32 firmware stay onboard; the orchestrator calls these methods as a high-level brain.",
+  "preferred_tier": "local",
+  "transport": {
+    "protocol": "direct",
+    "note": "Orchestrator calls methods in-process via cartridge/methods.ts, no WebSocket"
+  },
+  "methods": {
+    "navigate": {
+      "summary": "Move the robot to a goal expressed in natural language or coordinates. Returns plan immediately; use <|wait|>fd=3 to block until arrival or stuck.",
+      "args_schema": "../cartridge/schemas/navigate.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.navigate {\"goal\":\"kitchen\"}<|/call|>",
+        "<|call|>robot.navigate {\"goal\":\"the red door\"}<|/call|>",
+        "<|call|>robot.navigate {\"goal\":\"home\"}<|/call|>"
+      ]
+    },
+    "observe": {
+      "summary": "Return current SceneGraph snapshot (objects, positions, distances).",
+      "args_schema": "../cartridge/schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.observe {}<|/call|>"
+      ]
+    },
+    "describe": {
+      "summary": "Return a natural-language description of the current view.",
+      "args_schema": "../cartridge/schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.describe {}<|/call|>"
+      ]
+    },
+    "stop": {
+      "summary": "Emergency stop. Robot halts within reflex-guard latency (<50ms).",
+      "args_schema": "../cartridge/schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.stop {}<|/call|>"
+      ]
+    },
+    "set_speed": {
+      "summary": "Cap motor speed (e.g., for tight environments).",
+      "args_schema": "../cartridge/schemas/set_speed.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.set_speed {\"max\":\"slow\"}<|/call|>",
+        "<|call|>robot.set_speed {\"max\":\"normal\"}<|/call|>"
+      ]
+    },
+    "speak": {
+      "summary": "Speak text aloud to the user via TTS (or print to console).",
+      "args_schema": "schemas/speak.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.speak {\"text\":\"Hello! How can I help you today?\"}<|/call|>",
+        "<|call|>robot.speak {\"text\":\"I'll navigate to the kitchen now.\"}<|/call|>"
+      ]
+    },
+    "listen": {
+      "summary": "Listen for user speech via STT (or read from stdin). Returns transcribed text.",
+      "args_schema": "schemas/listen.args.schema.json",
+      "opcodes": [
+        "<|call|>robot.listen {}<|/call|>",
+        "<|call|>robot.listen {\"timeout_s\":10}<|/call|>"
+      ]
+    }
+  },
+  "io_ports": {
+    "fd=3": "Navigation events. <|wait|>fd=3 blocks until 'arrived' or 'stuck'.",
+    "fd=4": "Microphone input (alternative to robot.listen). <|read|>fd=4 len=1 reads one utterance.",
+    "fd=5": "Speaker output (alternative to robot.speak). <|write|>fd=5 {\"text\":\"hello\"} speaks text."
+  },
+  "halt": [
+    "<|halt|>status=success",
+    "<|halt|>status=failure",
+    "<|halt|>status=partial"
+  ]
+}
