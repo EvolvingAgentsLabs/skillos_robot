@@ -2,8 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PoseMap, SemanticMap, type SemanticMapEntry, type Pose } from '../../src/brain/memory/semantic_map';
 
-const MAP_FILE = path.join(__dirname, '../../src/3_llmunix_memory/traces/semantic_map.json');
-const TOPO_MAP_FILE = path.join(__dirname, '../../src/3_llmunix_memory/traces/topo_map.json');
+// These must match the paths semantic_map.ts actually writes to. They pointed at
+// src/3_llmunix_memory/ until 2026-07-24 — a directory that moved in an earlier
+// refactor — so every unlink was a silent no-op, state leaked between tests, and
+// 8 assertions failed. Nothing caught it because the suite had never run in CI.
+const MAP_FILE = path.join(__dirname, '../../src/brain/memory/traces/semantic_map.json');
+const TOPO_MAP_FILE = path.join(__dirname, '../../src/brain/memory/traces/topo_map.json');
 
 describe('PoseMap', () => {
   let map: PoseMap;

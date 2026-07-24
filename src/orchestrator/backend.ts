@@ -48,10 +48,14 @@ export interface OpenRouterBackendConfig {
 
 // ── Backend ─────────────────────────────────────────────────────
 
-const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
+// OPENROUTER_BASE_URL points this at any OpenAI-compatible server — ollama
+// exposes one at http://localhost:11434/v1 — so the simulator can be driven,
+// and a demo recorded, without a cloud key. Vision-capable local models are
+// required for the VLM path; the text-only paths work with any model.
+const DEFAULT_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
 
 export class OpenRouterBackend {
-  private readonly apiKey: string;
+  private apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly maxTokens: number;
@@ -66,10 +70,15 @@ export class OpenRouterBackend {
     this.temperature = config.temperature ?? 0.3;
     this.maxRetries = config.maxRetries ?? 3;
 
+    // A local server needs no key; only demand one when talking to OpenRouter.
     if (!this.apiKey) {
-      throw new Error(
-        'OpenRouter API key required. Set OPENROUTER_API_KEY or pass config.apiKey',
-      );
+      if (this.baseUrl.includes('openrouter.ai')) {
+        throw new Error(
+          'OpenRouter API key required. Set OPENROUTER_API_KEY, or set ' +
+          'OPENROUTER_BASE_URL to a local OpenAI-compatible server.',
+        );
+      }
+      this.apiKey = 'local';
     }
   }
 
