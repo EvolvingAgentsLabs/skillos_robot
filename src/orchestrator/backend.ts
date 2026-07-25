@@ -52,6 +52,9 @@ export interface OpenRouterBackendConfig {
 // exposes one at http://localhost:11434/v1 — so the simulator can be driven,
 // and a demo recorded, without a cloud key. Vision-capable local models are
 // required for the VLM path; the text-only paths work with any model.
+// Providers that cap how many stop sequences a request may carry.
+const STOP_SEQUENCE_LIMITS: Record<string, number> = { google: 5 };
+
 const DEFAULT_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
 
 export class OpenRouterBackend {
@@ -61,6 +64,7 @@ export class OpenRouterBackend {
   private readonly maxTokens: number;
   private readonly temperature: number;
   private readonly maxRetries: number;
+  private warnedAboutStops = false;
 
   constructor(config: OpenRouterBackendConfig = {}) {
     this.apiKey = config.apiKey || process.env.OPENROUTER_API_KEY || '';
@@ -99,7 +103,7 @@ export class OpenRouterBackend {
     };
 
     if (opts.stop) {
-      body.stop = opts.stop;
+      body.stop = this.capStopSequences(opts.stop);
     }
 
     if (opts.responseFormat) {
@@ -169,6 +173,48 @@ export class OpenRouterBackend {
       }
     }
     throw lastErr!;
+  }
+
+  /**
+   * Trim the stop-sequence list to what the provider accepts.
+   *
+   * The ISA declares 14 stop sequences — one per opcode, so the model cannot
+   * chain a second instruction onto the first. Google's API rejects more than
+   * five outright (400 INVALID_ARGUMENT), which took the whole simulator down
+   * rather than degrading.
+   *
+   * When we have to cut, keep the ones that actually fire: the three
+   * kernel-injected markers the model must never produce itself, plus `call`
+   * and `halt`, the opcodes it emits in practice. Dropping the rest means a
+   * chained `<|loop|>` or `<|fork|>` is no longer stopped at the sampler and
+   * has to be caught by the parser instead — so say so out loud, once, rather
+   * than letting it look like nothing changed.
+   */
+  private capStopSequences(stop: string[]): string[] {
+    const limit = STOP_SEQUENCE_LIMITS[this.providerKey()];
+    if (!limit || stop.length <= limit) return stop;
+
+    const priority = ['<|result|>', '<|/result|>', '<|ack|>', '\n<|call|>', '\n<|halt|>'];
+    const kept = priority.filter(p => stop.includes(p)).slice(0, limit);
+    for (const s of stop) {
+      if (kept.length >= limit) break;
+      if (!kept.includes(s)) kept.push(s);
+    }
+
+    if (!this.warnedAboutStops) {
+      this.warnedAboutStops = true;
+      const dropped = stop.filter(s => !kept.includes(s));
+      logger.warn('Backend',
+        `Provider allows at most ${limit} stop sequences; the ISA declares ${stop.length}. ` +
+        `Dropped ${dropped.join(' ')} — those opcodes now rely on the parser, not the sampler.`);
+    }
+    return kept;
+  }
+
+  private providerKey(): string {
+    if (this.baseUrl.includes('googleapis')) return 'google';
+    if (this.baseUrl.includes('openrouter')) return 'openrouter';
+    return 'other';
   }
 }
 

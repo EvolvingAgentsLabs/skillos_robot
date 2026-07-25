@@ -324,6 +324,9 @@ async function main(): Promise<void> {
   });
 
   // ── OpenRouter backend ────────────────────────────────────────────
+  // Which cartridge method produced the result onResult is handling.
+  let lastCallMethod: string | null = null;
+
   const backend = new OpenRouterBackend({
     apiKey: process.env.OPENROUTER_API_KEY,
     model,
@@ -402,9 +405,12 @@ Use robot.speak to talk, robot.listen to hear, robot.observe to see, and robot.n
         if (callOp.method === 'speak') {
           const text = String(callOp.args?.text ?? '');
           broadcast({ type: 'speak', text, step });
-        } else if (callOp.method === 'listen') {
-          // listen result is broadcast in onResult
         }
+        // Remember which method produced the result onResult is about to see.
+        // speak returns {spoken, text} and listen returns {text, silence}, so
+        // the result shape alone cannot tell them apart — keying off `text`
+        // alone made every robot utterance echo back as a person's reply.
+        lastCallMethod = callOp.method;
 
         if (callOp.method === 'navigate') {
         const goalStr = String(callOp.args?.goal ?? '').trim();
@@ -446,13 +452,14 @@ Use robot.speak to talk, robot.listen to hear, robot.observe to see, and robot.n
         console.log(`  [${step}] -> ${str}`);
       }
 
-      // Broadcast listen results (person's response)
-      if (typeof result === 'object' && result !== null && 'text' in result) {
+      // Broadcast the person's reply — only for an actual listen call.
+      if (lastCallMethod === 'listen' && typeof result === 'object' && result !== null && 'text' in result) {
         const listenResult = result as { text?: string };
         if (listenResult.text) {
           broadcast({ type: 'listen', text: listenResult.text, step });
         }
       }
+      lastCallMethod = null;
     },
   });
 
