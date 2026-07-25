@@ -7,6 +7,32 @@ import { VisionLoop } from '../../src/brain/perception/vision_loop';
 import type { InferenceFunction } from '../../src/brain/inference/inference';
 import { HierarchyLevel } from '../../src/brain/memory/trace_types';
 
+/**
+ * Wait until `predicate` holds, or fail after `timeoutMs`.
+ *
+ * Replaces `for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0))`,
+ * which flushed a fixed number of macrotask ticks and hoped the async chain had
+ * finished. Five ticks was enough on a developer laptop and not enough on a CI
+ * runner, so the suite passed locally and failed in CI on
+ * `multi-step plan executes to completion` — expected >= 1 calls, received 0.
+ *
+ * Polling costs nothing when the condition is already true, and turns a timing
+ * assumption into a bounded wait.
+ */
+async function waitFor(
+  predicate: () => boolean,
+  what: string,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(r => setTimeout(r, 5));
+  }
+  throw new Error(`waitFor timed out after ${timeoutMs}ms waiting for: ${what}`);
+}
+
+
 const TOPO_MAP_FILE = path.join(__dirname, '../../src/3_llmunix_memory/traces/topo_map.json');
 
 describe('RoClaw Tools', () => {
@@ -459,17 +485,18 @@ describe('RoClaw Tools', () => {
 
       // Fire arrival for step 1
       capturedArrivalCb!('Arrived at hallway');
-      // Flush multiple microtask cycles for the async advanceToNextStep chain
-      for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
-
-      // Verify setGoal was called with step 2's goal
+      await waitFor(
+        () => (ctx.visionLoop.setGoal as jest.Mock).mock.calls.length > 0,
+        'setGoal to be called with step 2 goal',
+      );
       expect((ctx.visionLoop.setGoal as jest.Mock)).toHaveBeenCalled();
 
       // Fire arrival for step 2 (plan complete)
       capturedArrivalCb!('Arrived at kitchen');
-      for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
-
-      // Plan is done: visionLoop.stop should have been called
+      await waitFor(
+        () => mockVisionLoopStop.mock.calls.length > 0,
+        'visionLoop.stop after the plan completes',
+      );
       expect(mockVisionLoopStop).toHaveBeenCalled();
       // Listener cleanup
       expect((ctx.visionLoop.removeListener as jest.Mock)).toHaveBeenCalledWith(
@@ -500,7 +527,10 @@ describe('RoClaw Tools', () => {
 
       // Single arrival should complete the plan
       capturedArrivalCb!('Arrived at target');
-      for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+      await waitFor(
+        () => mockVisionLoopStop.mock.calls.length > 0,
+        'visionLoop.stop after the single-step plan completes',
+      );
 
       expect(mockVisionLoopStop).toHaveBeenCalled();
       expect((ctx.visionLoop.removeListener as jest.Mock)).toHaveBeenCalledWith(
