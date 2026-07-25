@@ -1,5 +1,9 @@
 # skillos_robot
 
+<p align="center">
+  <img src="docs/img/skillos_robot.jpg" alt="A slow outer loop driving a fast inner one" width="100%">
+</p>
+
 A physical (or simulated) embodiment of `llm_os`. The robot exposes itself as a `robot.*` cartridge over WebSocket; an upstream `llm_os` kernel (running in a browser tab, or via skillos_mini's launcher) calls cartridge methods to navigate and observe the world. Internally the robot delegates to **remote LLMs as tools** -- Qwen3-VL-8B via OpenRouter for vision (default), Gemma 4 for orchestration, Gemini Robotics-ER as an alternative, and the kernel-CPU running upstream as the strategic decision-maker.
 
 In one sentence: **`skillos_robot` is the `vision + motors` device driver of `llm_os`.**
